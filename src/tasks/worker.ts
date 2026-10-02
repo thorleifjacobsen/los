@@ -8,6 +8,7 @@ import { approvals, runs } from "../core/control.js";
 import { bus } from "../core/events.js";
 import { nextRun, sqlUtc } from "../core/time.js";
 import { claimNext, createTask, finishTask, route, setStatus, type TaskRow } from "./queue.js";
+import { afterCardTask, queueCards } from "../core/boards.js";
 
 const APPROVAL_WAIT = 24 * 3600_000; // a background task waits up to a day for your OK
 const ui = (kind: string, data: Record<string, unknown> = {}) => bus.emit("ui", { kind, ...data });
@@ -45,6 +46,8 @@ export async function runTask(app: App, task: TaskRow, onEvent?: (e: AgentEvent)
     runs.end(key);
     db.prepare("UPDATE tasks SET updated_at = datetime('now') WHERE id = ?").run(task.id);
     report(app, task.id, Date.now() - started);
+    try { afterCardTask(app, db.prepare("SELECT * FROM tasks WHERE id = ?").get(task.id) as TaskRow); }
+    catch (e) { console.warn(`card follow-up for task #${task.id} failed: ${(e as Error).message}`); }
     ui("tasks");
   }
 }
@@ -89,6 +92,7 @@ export function scheduleDue(app: App, now = new Date()) {
       .run(sqlUtc(now), taskId, next, next ? 1 : 0, j.id);
   }
   if (due.length) ui("tasks");
+  queueCards(app); // cards assigned to agents: one task per agent at a time
 }
 
 /** Run up to `concurrency` tasks at once, and check the job schedule every 20s. Returns a stop function. */

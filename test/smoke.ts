@@ -400,6 +400,35 @@ assert.deepEqual(chatView(app.db, br, "los", u2).map((m) => m.content), ["ny mel
 assert.deepEqual(chatView(app.db, br, "los", u1, 0, u1 + 1).map((m) => m.content), ["gammel melding", "gammelt svar"], "a request from before the edit rebuilds as it was");
 ok("security + profile: internal addresses refused (allow_internal opens), TOTP = RFC 6238, {{name}} fills, edits archive and stay rebuildable");
 
+// Boards: dedupe keys, who may move cards, hand-ons need a reason, the agent queue (one card at a time), hand-back.
+{
+  const B = await import("../src/core/boards.js");
+  const n = (sql: string, ...a: unknown[]) => (app.db.prepare(sql).get(...a) as any).n;
+  app.settings.agents.mira.tools = [...app.settings.agents.mira.tools, "cards_*"];
+  const bid = B.createBoard(app.db, { name: "Leads", columns: B.parseColumns(["New", "Approved", "Not a lead (done)"]), owner: "mira" });
+  const c1 = B.addCard(app, "leads", { title: "Rørlegger AS", key: "Rorlegger.no" }, "mira");
+  assert.throws(() => B.addCard(app, bid, { title: "igjen", key: "rorlegger.no" }, "mira"), /already has a card with key "rorlegger.no"/);
+  assert.throws(() => B.updateCard(app, c1, { column: "Approved" }, "mira"), /only the user moves/);
+  assert.throws(() => B.updateCard(app, c1, { assignee: "finn" }, "mira"), /say why/);
+  B.updateCard(app, c1, { column: "Approved", comment: "good one, too small for a webshop" }, "me");
+  app.db.prepare("UPDATE cards SET passes = ? WHERE id = ?").run(B.MAX_PASSES, c1);
+  assert.throws(() => B.updateCard(app, c1, { assignee: "finn", comment: "your turn" }, "mira"), /passed between teammates/);
+  assert.match(B.boardsContext(app, "mira")!, /"Leads" \(#\d+, yours\): New 0, Approved 1[\s\S]*commented on #\d+ "Rørlegger AS": good one/);
+  const c2 = B.addCard(app, bid, { title: "Lag en demo", assignee: "mira" }, "me");
+  const c3 = B.addCard(app, bid, { title: "Neste kort", assignee: "mira" }, "me");
+  assert.equal(n("SELECT count(*) n FROM tasks WHERE card_id IS NOT NULL AND status = 'queued'"), 1, "one card at a time per agent");
+  script = [call("cards_update", { id: c2, comment: "Demo: /files/demo.html" }), say("Laget demoen."), say("Neste er gjort.")];
+  await workLoop(app, { once: true, log: () => {} });
+  const back = B.getCard(app.db, c2);
+  assert.equal(back.assignee, "me", "left with the agent → back to you for review");
+  const evs = B.cardEvents(app.db, c2).map((e) => `${e.who}:${e.type}`);
+  assert.deepEqual(evs.slice(-3), ["mira:comment", "mira:result", "mira:assigned"]);
+  assert.equal(B.getCard(app.db, c3).assignee, "me", "then the next card, after the first");
+  assert.equal(n("SELECT count(*) n FROM tasks WHERE card_id = ? AND status = 'done'", c3), 1);
+  assert.equal(B.needsYou(app.db), 2);
+}
+ok("boards: keys dedupe, only you move cards (unless allowed), hand-ons need a reason and are capped, agents work their cards one at a time, results land on the card and it comes back to you");
+
 await app.close();
 server.close();
 console.log("\nall good");

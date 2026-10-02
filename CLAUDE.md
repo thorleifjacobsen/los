@@ -107,6 +107,8 @@ src/core/history.ts     what a brain missed (runtimeHistory), compaction (compac
 src/core/conversation.ts export a session as Responses-style items JSON (GET /api/sessions/:id/conversation)
 src/tasks/worker.ts     worker pool (startWorkers), scheduler (scheduleDue: jobs → tasks), report() into report_to
 src/plugins/jobs/       jobs_create/list/update/run_now/delete (recurring), context() lists jobs reporting to this chat
+src/core/boards.ts      kanban boards: cards, assignees, the agent card queue, hand-back (schema + rules)
+src/plugins/boards/     boards_list/create, cards_find/get/add/update; context() shows an agent its boards + your decisions
 src/plugins/team/       team_list, team_find (keyword rank over personalities); team_ask only inside background tasks
 src/core/workspace.ts   the shared folder data/workspace: safe paths, folder-aware private flags, listing, search (rg)
 src/plugins/tasks/      tasks_create (later work, run_at local time, reports back), tasks_wait (subtasks), tasks_cancel
@@ -371,6 +373,24 @@ web/                    vanilla JS SPA (app.js), style.css, login.html. marked +
 - **Auto-compaction:** after a chat turn (only when no agent is still working there), if `context.used` ≥ `chat.auto_compact` × window (default 0.8; unknown
   window: 160k), the chat is compacted with the brain that answered (`compact` event with `auto: true`).
 - **Notifications:** browser notifications (🔔 in the nav) for answers, reports and approvals while the tab is hidden.
+
+### Boards (kanban, 2026-10-02)
+
+- **Tables** `boards` (columns JSON `[{name, done?}]`, `owner` agent, `agents_move`, `bypass`, `report_to`), `cards`
+  (`col`, `assignee` = `me` | agent | null, `key` unique per board for dedupe, `priority` 0–2, `passes`, `bypass`),
+  `card_events` (created / moved / assigned / comment / updated / result). `tasks.card_id` links card work.
+- **Agent queue** (`queueCards()`, on every assignment and in `scheduleDue` every 20 s): an agent with cards assigned
+  (not in a done column) gets **one** card task at a time, priority then oldest first. When it ends
+  (`afterCardTask()`), the result is logged on the card and a card the agent left with itself goes back to `me`.
+- **Rules:** only you move cards between columns unless the board has `agents_move`; agents must comment when they
+  reassign; agent→agent passes are capped at 5 (`MAX_PASSES`) until you touch the card; only you set bypass (board or
+  card → the card task's bypass). Agents see their boards (owned or with cards assigned) + your recent moves/comments
+  in the system prompt (`boardsContext()`), which is how Kai learns from rejected leads.
+- **UI** `/boards`, `/boards/:id` (drag between columns, card drawer with activity); nav badge = cards waiting for you
+  (`needsYou()`, also `cardsForYou` in `/api/overview`). Only `/files/…` card images are shown (no web images).
+- **Leads:** board "Leads" (owner kai, columns New / Approved / Contacted / Won / Lost / Not a lead), chat "Leads",
+  job "Daily lead hunt" (`0 12 * * 1-5`, kai, reports to that chat). Kai uses the domain as key and files sites he
+  rejected under "Not a lead", so nothing is checked twice.
 
 ### Events
 

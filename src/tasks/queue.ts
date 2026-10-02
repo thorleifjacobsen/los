@@ -5,16 +5,17 @@ import type { Settings } from "../config.js";
 export type TaskRow = {
   id: number; title: string; prompt: string; status: string; agent: string | null; brain: string | null;
   parent_id: number | null; session_id: string | null; result: string | null; private: number; run_at: string;
-  report_to: string | null; job_id: number | null; requested_by: string | null; bypass: number; created_at: string; updated_at: string;
+  report_to: string | null; job_id: number | null; requested_by: string | null; bypass: number; card_id: number | null; created_at: string; updated_at: string;
 };
 
 export function createTask(db: DB, t: {
   title: string; prompt: string; agent?: string; brain?: string; parentId?: number; runAt?: string; reportTo?: string; jobId?: number; requestedBy?: string;
+  cardId?: number;  // a board card this works on (the agent queue in core/boards.ts)
   bypass?: boolean; // only from the user (UI/API) or a job they set it on, never from an agent's tool call
 }) {
-  return Number(db.prepare(`INSERT INTO tasks (title, prompt, agent, brain, parent_id, run_at, report_to, job_id, requested_by, bypass)
-    VALUES (?, ?, ?, ?, ?, coalesce(?, datetime('now')), ?, ?, ?, ?)`)
-    .run(t.title, t.prompt, t.agent ?? null, t.brain ?? null, t.parentId ?? null, t.runAt ?? null, t.reportTo ?? null, t.jobId ?? null, t.requestedBy ?? null, t.bypass ? 1 : 0).lastInsertRowid);
+  return Number(db.prepare(`INSERT INTO tasks (title, prompt, agent, brain, parent_id, run_at, report_to, job_id, requested_by, bypass, card_id)
+    VALUES (?, ?, ?, ?, ?, coalesce(?, datetime('now')), ?, ?, ?, ?, ?)`)
+    .run(t.title, t.prompt, t.agent ?? null, t.brain ?? null, t.parentId ?? null, t.runAt ?? null, t.reportTo ?? null, t.jobId ?? null, t.requestedBy ?? null, t.bypass ? 1 : 0, t.cardId ?? null).lastInsertRowid);
 }
 
 /** Atomically claim the next due task, so several workers can run side by side. */

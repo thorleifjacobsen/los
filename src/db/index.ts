@@ -46,6 +46,7 @@ export function migrate(db: DB) {
   add("sessions", "bypass", "INTEGER NOT NULL DEFAULT 0");   // 1: tools that need approval run without asking here
   add("tasks", "bypass", "INTEGER NOT NULL DEFAULT 0");      // same for a background task (copied to its session)
   add("jobs", "bypass", "INTEGER NOT NULL DEFAULT 0");       // passed on to every task the job starts
+  add("tasks", "card_id", "INTEGER");                        // board card this task works on (core/boards.ts)
   // 2026-10: plain chats with visible handoffs. Home, DMs and rooms all became chats.
   const newTurn = hasTable(db, "messages") && !(db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).some((c) => c.name === "turn");
   add("messages", "turn", "INTEGER");                        // the run (its starting user/handoff message) a reply belongs to

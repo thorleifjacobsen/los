@@ -13,6 +13,7 @@ import { runAgent, workdir, requestContext } from "../core/loop.js";
 import { compactSession } from "../core/history.js";
 import { createSession, getSession, membersOf, addressees, mentions, join as joinChat, saveMessage, allowIn } from "../core/session.js";
 import { approvals, runs } from "../core/control.js";
+import { BoardError, ME, addCard, cardEvents, columnsOf, createBoard, deleteCard, getBoard, getCard, needsYou, parseColumns, updateCard, type BoardRow, type CardRow } from "../core/boards.js";
 import { checkSchedule, fmtLocal, nextRun, sqlUtc, parseWhen } from "../core/time.js";
 import { exportConversation } from "../core/conversation.js";
 import { WORKSPACE, wsPath, listDir, searchWorkspace, isPrivatePath, setShared, resolveShared, moveShared, dropShared } from "../core/workspace.js";
@@ -254,6 +255,7 @@ export function startWebServer(app: App, opts: { port: number; worker: { current
       worker: opts.worker.current(),
       running: runs.list(),
       approvals: approvals.size,
+      cardsForYou: needsYou(db),
       defaultAgent: app.settings.default_agent,
       claude: { version: claudeInfo.version, loggedIn: existsSync(join(claudeConfigDir(), ".credentials.json")) },
       // Only brains an agent relies on: an unused brain that was never logged in isn't worth a warning.
@@ -614,6 +616,85 @@ export function startWebServer(app: App, opts: { port: number; worker: { current
     notify("tasks");
     return jobView(db.prepare("SELECT * FROM jobs WHERE id = ?").get(j.id));
   });
+  // Boards (kanban): you are "me". The rules (agent queue, who may move cards) are in core/boards.ts.
+  const boardOut = (b: BoardRow) => ({ ...b, columns: columnsOf(b), agents_move: !!b.agents_move, bypass: !!b.bypass,
+    counts: Object.fromEntries((db.prepare("SELECT col, count(*) n FROM cards WHERE board_id = ? GROUP BY col").all(b.id) as any[]).map((r) => [r.col, r.n])),
+    mine: (db.prepare("SELECT count(*) n FROM cards WHERE board_id = ? AND assignee = 'me'").get(b.id) as any).n,
+    report_title: b.report_to ? (db.prepare("SELECT title FROM sessions WHERE id = ?").get(b.report_to) as any)?.title ?? null : null });
+  const cardOut = (c: CardRow) => ({ ...c, tags: JSON.parse(c.tags), bypass: !!c.bypass,
+    task: db.prepare("SELECT id, status, agent FROM tasks WHERE card_id = ? ORDER BY id DESC LIMIT 1").get(c.id) ?? null,
+    comments: (db.prepare("SELECT count(*) n FROM card_events WHERE card_id = ? AND type IN ('comment', 'result')").get(c.id) as any).n });
+  const boardsDo = <T>(fn: () => T): T => { try { return fn(); } catch (e) { if (e instanceof BoardError) throw bad(e.message); throw e; } };
+  const boardBody = (b: any) => {
+    if (b.owner && !app.settings.agents[b.owner]) throw bad(`unknown agent "${b.owner}"`);
+    if (b.report_to && !getSession(db, b.report_to)) throw bad("no such chat");
+    return b;
+  };
+  route("GET", "/api/boards", () => ({ boards: (db.prepare("SELECT * FROM boards ORDER BY id").all() as BoardRow[]).map(boardOut), needsYou: needsYou(db) }));
+  route("POST", "/api/boards", async (req) => {
+    const b = boardBody(await body(req));
+    const id = boardsDo(() => createBoard(db, { name: String(b.name ?? ""), description: b.description || undefined,
+      columns: parseColumns(b.columns ?? ["To do", "Doing", "Done (done)"]), owner: b.owner || null, agentsMove: !!b.agents_move, reportTo: b.report_to || null }));
+    if (b.bypass) db.prepare("UPDATE boards SET bypass = 1 WHERE id = ?").run(id);
+    return boardOut(getBoard(db, id));
+  });
+  route("GET", "/api/boards/:id", (req) => {
+    const b = boardsDo(() => getBoard(db, req.params.id));
+    return { ...boardOut(b), cards: (db.prepare("SELECT * FROM cards WHERE board_id = ? ORDER BY priority DESC, updated_at DESC").all(b.id) as CardRow[]).map(cardOut) };
+  });
+  route("PATCH", "/api/boards/:id", async (req) => {
+    const old = boardsDo(() => getBoard(db, req.params.id));
+    const b = boardBody(await body(req));
+    const cols = b.columns ? boardsDo(() => parseColumns(b.columns)) : columnsOf(old);
+    const used = (db.prepare("SELECT DISTINCT col FROM cards WHERE board_id = ?").all(old.id) as { col: string }[]).map((r) => r.col);
+    const gone = used.filter((c) => !cols.some((x) => x.name === c));
+    if (gone.length) throw bad(`these columns still have cards: ${gone.join(", ")}. Move them first.`);
+    if (b.name && b.name.trim().toLowerCase() !== old.name.toLowerCase() && db.prepare("SELECT 1 FROM boards WHERE lower(name) = lower(?)").get(b.name.trim()))
+      throw bad(`there's already a board called "${b.name.trim()}"`);
+    db.prepare("UPDATE boards SET name = ?, description = ?, columns = ?, owner = ?, agents_move = ?, bypass = ?, report_to = ? WHERE id = ?").run(
+      b.name?.trim() || old.name, "description" in b ? b.description || null : old.description, JSON.stringify(cols),
+      "owner" in b ? b.owner || null : old.owner, "agents_move" in b ? (b.agents_move ? 1 : 0) : old.agents_move,
+      "bypass" in b ? (b.bypass ? 1 : 0) : old.bypass, "report_to" in b ? b.report_to || null : old.report_to, old.id);
+    notify("boards", { boardId: old.id });
+    return boardOut(getBoard(db, old.id));
+  });
+  route("DELETE", "/api/boards/:id", (req) => {
+    const b = boardsDo(() => getBoard(db, req.params.id));
+    db.transaction(() => {
+      db.prepare("DELETE FROM card_events WHERE card_id IN (SELECT id FROM cards WHERE board_id = ?)").run(b.id);
+      db.prepare("DELETE FROM cards WHERE board_id = ?").run(b.id);
+      db.prepare("DELETE FROM boards WHERE id = ?").run(b.id);
+    })();
+    notify("boards", { boardId: b.id });
+    return { ok: true };
+  });
+  route("POST", "/api/boards/:id/cards", async (req) => {
+    const b = await body(req);
+    const id = boardsDo(() => addCard(app, req.params.id, { title: String(b.title ?? ""), body: b.body || undefined, link: b.link || undefined,
+      image: b.image || undefined, tags: b.tags, key: b.key || undefined, column: b.column || undefined, assignee: b.assignee || null, priority: Number(b.priority) || 0 }, ME));
+    if (b.bypass) db.prepare("UPDATE cards SET bypass = 1 WHERE id = ?").run(id);
+    return cardOut(getCard(db, id));
+  });
+  route("GET", "/api/cards/:id", (req) => {
+    const c = boardsDo(() => getCard(db, Number(req.params.id)));
+    return { ...cardOut(c), events: cardEvents(db, c.id, 500),
+      tasks: db.prepare("SELECT id, status, agent, created_at FROM tasks WHERE card_id = ? ORDER BY id DESC LIMIT 20").all(c.id) };
+  });
+  route("PATCH", "/api/cards/:id", async (req) => {
+    const b = await body(req);
+    const p: Record<string, unknown> = {};
+    for (const k of ["title", "body", "link", "image", "tags", "column", "priority", "comment", "bypass"]) if (k in b) p[k] = b[k];
+    if ("assignee" in b) p.assignee = b.assignee || null;
+    return cardOut(boardsDo(() => updateCard(app, Number(req.params.id), p, ME)));
+  });
+  route("DELETE", "/api/cards/:id", (req) => {
+    const id = Number(req.params.id);
+    const t = db.prepare("SELECT id FROM tasks WHERE card_id = ? AND status IN ('queued', 'running', 'waiting')").get(id) as any;
+    if (t) throw new HttpError(409, `task #${t.id} is working on this card; stop it first`);
+    boardsDo(() => deleteCard(db, id));
+    return { ok: true };
+  });
+
   route("DELETE", "/api/jobs/:id", (req) => {
     db.prepare("DELETE FROM jobs WHERE id = ?").run(Number(req.params.id));
     notify("tasks");

@@ -141,6 +141,7 @@ const routes = [
   [/^\/overview$/, viewOverview, "overview"],
   [/^\/chat(?:\/([\w-]+))?$/, viewChat, "chat"],
   [/^\/tasks(?:\/(\d+))?$/, viewTasks, "tasks"],
+  [/^\/boards(?:\/(\d+))?$/, viewBoards, "boards"],
   [/^\/agents$/, viewAgents, "agents"],
   [/^\/brains$/, viewBrains, "brains"],
   [/^\/tools$/, viewTools, "tools"],
@@ -252,6 +253,7 @@ const refreshStatus = debounce(async () => {
     setBadge($("#nav-home"), chats.length ? "•" : 0, "soft");
     setBadge($("#nav-tasks"), o.tasks.waiting ? o.tasks.waiting : (o.tasks.queued ?? 0) + (o.tasks.running ?? 0), o.tasks.waiting ? "" : "soft");
     setBadge($("#top-approvals"), o.approvals);
+    setBadge($("#nav-boards"), o.cardsForYou ?? 0);
     setBadge($("#nav-brains"), o.brainsDown.length);
     const w = $("#status-worker");
     w.className = `status-line ${!o.worker.enabled ? "bad" : o.worker.active ? "busy" : "ok"}`;
@@ -2028,6 +2030,238 @@ async function viewFiles(root) {
 // (or teammates granted access) may read it. (Sharing on the web is the separate 🌐 switch on workspace files.)
 const privToggle = (attrs, isPrivate) => `<button type="button" class="priv ${isPrivate ? "on" : ""}" ${attrs}
   title="${isPrivate ? "Private: only local AI models (or teammates you granted access) may read this, and it can't be shared. Click to let every teammate read it." : "Every teammate may read this. Click to make it private: local AI models only."}">${isPrivate ? "🔒 Private" : "🔒"}</button>`;
+
+// ── boards ───────────────────────────────────────────────────────────────
+// Kanban for you and the team. A card assigned to an agent is in its queue: it does it as a background task when
+// it has time, one card at a time, and gives it back to you when done. Cards assigned to you are the nav badge.
+const PRIO = ["Normal", "High", "Urgent"];
+const whoName = (h) => h === "me" ? "You" : h ? agentName(h) : "Nobody";
+const whoFace = (h, size = 20) => h === "me" ? meFace(size) : h ? face(h, size) : "";
+const assigneeOptions = (sel) => `<option value="" ${!sel ? "selected" : ""}>Nobody</option><option value="me" ${sel === "me" ? "selected" : ""}>You</option>` +
+  team.agents.map((a) => `<option value="${esc(a.handle)}" ${a.handle === sel ? "selected" : ""}>${esc(a.name)}${a.emoji ? ` ${esc(a.emoji)}` : ""}</option>`).join("");
+// Only workspace pictures show on cards: an agent-chosen web image could leak that it was viewed (like in chats).
+const cardImage = (src) => src && src.startsWith("/files/") ? src : null;
+const OPEN_TASK = ["queued", "running", "waiting"];
+
+async function viewBoards(root, id) {
+  await Promise.all([loadMeta(), loadSpace()]);
+  const state = { id: id ? Number(id) : null, board: null, boards: [], needsYou: 0, q: "", mine: false, openCard: null };
+
+  async function load() {
+    if (state.id) {
+      try { state.board = await api(`/api/boards/${state.id}`); } catch (e) { fail(e); return navigate("/boards", { replace: true }); }
+      drawBoard();
+    } else {
+      const r = await api("/api/boards");
+      state.boards = r.boards; state.needsYou = r.needsYou;
+      drawList();
+    }
+  }
+
+  function drawList() {
+    root.innerHTML = `<div class="page">
+      <div class="page-head"><div><h1>Boards</h1><p>Kanban boards for you and the team: leads, bugs, ideas, anything worth keeping track of. Assign a card to a teammate and they do it when they have time, then hand it back to you. Cards marked “You” are waiting for you.</p></div>
+        <div class="actions"><button class="btn primary" id="new-board">${ICON.plus}New board</button></div></div>
+      ${state.needsYou ? `<div class="notice"><span>👋</span><div><b>${state.needsYou}</b> ${state.needsYou > 1 ? "cards are" : "card is"} waiting for you.</div></div>` : ""}
+      <div class="jobs" style="margin-top:14px">${state.boards.length ? state.boards.map((b) => `<a class="card card-pad board-tile" href="/boards/${b.id}">
+          <div class="row"><b class="grow ellipsis">${esc(b.name)}</b>${b.owner ? face(b.owner, 22) : ""}${b.mine ? `<span class="badge" title="Waiting for you">${b.mine}</span>` : ""}</div>
+          ${b.description ? `<div class="small muted ellipsis2">${esc(b.description)}</div>` : ""}
+          <div class="small faint">${b.columns.map((c) => `${esc(c.name)} <b>${b.counts[c.name] ?? 0}</b>`).join(" · ")}</div>
+          ${b.bypass ? `<div><span class="chip warn">⚠ bypass</span></div>` : ""}</a>`).join("")
+        : `<div class="card"><div class="empty"><h3>No boards yet</h3><p>Make one here, or ask an agent to keep one ("keep a board of …").</p></div></div>`}</div></div>`;
+    $("#new-board", root).onclick = () => boardDrawer(null);
+  }
+
+  function drawBoard() {
+    const b = state.board, q = state.q.trim().toLowerCase();
+    const shown = b.cards.filter((c) => (!state.mine || c.assignee === "me") &&
+      (!q || `${c.title} ${c.body ?? ""} ${c.key ?? ""} ${c.link ?? ""} ${c.tags.join(" ")} ${whoName(c.assignee)}`.toLowerCase().includes(q)));
+    const card = (c) => {
+      const img = cardImage(c.image), t = c.task && OPEN_TASK.includes(c.task.status) ? c.task : null;
+      return `<article class="kcard prio${c.priority} ${c.assignee === "me" ? "you" : ""}" draggable="true" data-card="${c.id}">
+        ${img ? `<img src="${esc(img)}" alt="" loading="lazy">` : ""}
+        <div class="kt">${esc(c.title)}</div>
+        ${c.tags.length || c.link ? `<div class="kmeta">${c.tags.map((t) => `<span class="chip outline">${esc(t)}</span>`).join("")}${c.link ? `<span class="faint ellipsis">${esc(c.link.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, ""))}</span>` : ""}</div>` : ""}
+        <div class="kfoot">${c.assignee ? `${whoFace(c.assignee, 18)}<span>${esc(whoName(c.assignee))}</span>` : `<span class="faint">unassigned</span>`}
+          ${t ? `<span class="tstat ${esc(t.status)}"></span><span>${t.status === "queued" ? "in queue" : esc(t.status)}</span>` : ""}
+          <span class="grow"></span>${c.priority ? `<span class="chip ${c.priority > 1 ? "err" : "warn"}">${PRIO[c.priority]}</span>` : ""}${c.bypass ? `<span title="Bypass on">⚠</span>` : ""}${c.comments ? `<span title="Comments and results">💬 ${c.comments}</span>` : ""}</div>
+      </article>`;
+    };
+    root.innerHTML = `<div class="page page-wide">
+      <div class="page-head"><div><div class="small"><a href="/boards">← Boards</a></div>
+          <h1 class="row" style="gap:10px">${esc(b.name)}${b.owner ? face(b.owner, 26) : ""}${b.bypass ? `<span class="chip warn" title="Card work runs tools without asking">⚠ Bypass</span>` : ""}</h1>
+          <p>${b.description ? esc(b.description) : ""}${b.owner ? ` <span class="faint">Kept by ${esc(agentName(b.owner))}.</span>` : ""} <span class="faint">${b.agents_move ? "Agents may move cards." : "Only you move cards between columns."}${b.report_title ? ` Reports to “${esc(b.report_title)}”.` : ""}</span></p></div>
+        <div class="actions"><input class="input" id="kq" placeholder="Filter…" value="${esc(state.q)}" style="width:160px">
+          <label class="check small"><input type="checkbox" id="kmine" ${state.mine ? "checked" : ""}>Waiting for me${b.mine ? ` (${b.mine})` : ""}</label>
+          <button class="btn" id="kset">${ICON.edit}Board</button><button class="btn primary" id="kadd">${ICON.plus}New card</button></div></div>
+      <div class="kanban">${b.columns.map((col) => {
+        const list = shown.filter((c) => c.col === col.name);
+        return `<section class="kcol ${col.done ? "done" : ""}" data-col="${esc(col.name)}">
+          <header><b>${esc(col.name)}</b><span class="n">${list.length}</span>${col.done ? `<span class="chip outline">done</span>` : ""}<span class="grow"></span>
+            <button class="icon-btn" data-addto="${esc(col.name)}" title="Add a card here">${ICON.plus}</button></header>
+          <div class="kcards">${list.map(card).join("") || `<div class="small faint kempty">No cards</div>`}</div></section>`;
+      }).join("")}</div></div>`;
+    const kq = $("#kq", root);
+    kq.oninput = debounce(() => { state.q = kq.value; drawBoard(); $("#kq", root).focus(); $("#kq", root).setSelectionRange(state.q.length, state.q.length); }, 200);
+    $("#kmine", root).onchange = (e) => { state.mine = e.target.checked; drawBoard(); };
+    $("#kset", root).onclick = () => boardDrawer(b);
+    $("#kadd", root).onclick = () => newCardDrawer(b);
+    $$("[data-addto]", root).forEach((x) => (x.onclick = () => newCardDrawer(b, x.dataset.addto)));
+    $$("[data-card]", root).forEach((el) => {
+      el.onclick = () => cardDrawer(Number(el.dataset.card));
+      el.ondragstart = (e) => { e.dataTransfer.setData("text/plain", el.dataset.card); el.classList.add("dragging"); };
+      el.ondragend = () => el.classList.remove("dragging");
+    });
+    $$(".kcol", root).forEach((colEl) => {
+      colEl.ondragover = (e) => { e.preventDefault(); colEl.classList.add("drop"); };
+      colEl.ondragleave = () => colEl.classList.remove("drop");
+      colEl.ondrop = async (e) => {
+        e.preventDefault(); colEl.classList.remove("drop");
+        const cid = Number(e.dataTransfer.getData("text/plain")), c = b.cards.find((x) => x.id === cid);
+        if (!c || c.col === colEl.dataset.col) return;
+        c.col = colEl.dataset.col; drawBoard();
+        try { await api(`/api/cards/${cid}`, { method: "PATCH", body: { column: colEl.dataset.col } }); } catch (err) { fail(err); }
+        load();
+      };
+    });
+  }
+
+  function evHtml(e) {
+    const by = `<span class="who">${e.who === "me" ? "You" : esc(agentName(e.who))}</span>`, d = e.data ?? {};
+    const body = e.type === "created" ? `${by} created it in ${esc(d.column)}${d.assignee ? ` for ${esc(whoName(d.assignee))}` : ""}`
+      : e.type === "moved" ? `${by} moved it from ${esc(d.from)} to <b>${esc(d.to)}</b>`
+      : e.type === "assigned" ? `${by} ${d.to === e.who ? "took it" : `assigned it to <b>${esc(whoName(d.to))}</b>`}${e.text ? `: ${esc(e.text)}` : ""}`
+      : e.type === "updated" ? `${by} edited it`
+      : e.type === "result" ? `${by}'s result${d.task ? ` (<a href="/tasks/${d.task}">task #${d.task}</a>)` : ""}<div class="md">${md(e.text)}</div>`
+      : `${by}<div class="md">${md(e.text)}</div>`;
+    return `<div class="card-ev ${e.type}">${e.who === "me" ? meFace(20) : face(e.who, 20)}<div class="grow" style="min-width:0">${body}<div class="small faint">${ago(e.created_at)}</div></div></div>`;
+  }
+
+  async function cardDrawer(cid) {
+    let c;
+    try { c = await api(`/api/cards/${cid}`); } catch (e) { return fail(e); }
+    state.openCard = cid;
+    const b = state.board, img = cardImage(c.image), task = c.tasks.find((t) => OPEN_TASK.includes(t.status));
+    const d = openDrawer(`${drawerHead(`#${c.id} · ${esc(c.title)}`, `${esc(b.name)}${c.key ? ` · key <code>${esc(c.key)}</code>` : ""} · created ${c.created_by ? `by ${esc(whoName(c.created_by))} ` : ""}${ago(c.created_at)}`)}
+      <div class="drawer-body">
+        <div class="kgrid3">
+          <label class="field">Column<select class="input" id="c-col">${b.columns.map((x) => `<option ${x.name === c.col ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+          <label class="field">Assigned to<select class="input" id="c-who">${assigneeOptions(c.assignee)}</select></label>
+          <label class="field">Priority<select class="input" id="c-prio">${PRIO.map((p, i) => `<option value="${i}" ${i === c.priority ? "selected" : ""}>${p}</option>`).join("")}</select></label>
+        </div>
+        ${task ? `<div class="notice info"><span>⏳</span><div>${esc(agentName(task.agent))} is on it: <a href="/tasks/${task.id}">task #${task.id}</a> (${esc(task.status)}).</div></div>`
+          : c.assignee && c.assignee !== "me" && !b.columns.find((x) => x.name === c.col)?.done ? `<div class="notice info"><span>🕑</span><div>In ${esc(agentName(c.assignee))}'s queue: they take it when they're free.</div></div>` : ""}
+        ${c.link ? `<div><a href="${esc(c.link)}" target="_blank" rel="noopener noreferrer">${esc(c.link)}</a></div>` : ""}
+        ${img ? `<a href="${esc(img)}" target="_blank" rel="noopener"><img class="card-img" src="${esc(img)}" alt=""></a>` : c.image ? `<div class="small"><a href="${esc(c.image)}" target="_blank" rel="noopener noreferrer">Image</a></div>` : ""}
+        ${c.body ? `<div class="md card card-pad">${md(c.body)}</div>` : ""}
+        <details class="card card-pad"><summary class="small"><b>Edit</b> title, details, link, tags</summary>
+          <form class="stack" id="c-form" style="margin-top:10px">
+            <label class="field">Title<input class="input" name="title" value="${esc(c.title)}" required></label>
+            <label class="field">Details (Markdown)<textarea class="input" name="body" rows="8">${esc(c.body ?? "")}</textarea></label>
+            <label class="field">Link<input class="input" name="link" value="${esc(c.link ?? "")}"></label>
+            <label class="field">Image (a /files/… link)<input class="input" name="image" value="${esc(c.image ?? "")}"></label>
+            <label class="field">Tags (comma-separated)<input class="input" name="tags" value="${esc(c.tags.join(", "))}"></label>
+            <div><button type="submit" class="btn primary sm">Save</button></div>
+          </form></details>
+        <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" id="c-bypass" ${c.bypass ? "checked" : ""}><span><b>Bypass</b>: work on this card runs tools without asking${b.bypass ? " (the whole board has bypass on)" : ""}</span></label>
+        <div><h2 class="section" style="margin-top:6px">Activity</h2>
+          <form class="inline-form" id="c-comment" style="padding:0 0 8px"><textarea class="input grow" name="text" rows="2" placeholder="Comment (the assignee sees it)…" required></textarea><button class="btn">Comment</button></form>
+          <div class="card-evs">${c.events.slice().reverse().map(evHtml).join("")}</div></div>
+      </div>
+      <div class="drawer-foot"><button class="btn danger ghost" id="c-del">${ICON.trash}Delete</button><span class="grow"></span><button class="btn" data-close>Close</button></div>`,
+      { wide: true, onClose: () => { state.openCard = null; } });
+    const patch = async (body, again = true) => {
+      try { await api(`/api/cards/${cid}`, { method: "PATCH", body }); await load(); if (again && state.openCard === cid) cardDrawer(cid); } catch (err) { fail(err); cardDrawer(cid); }
+    };
+    $("#c-col", d.el).onchange = (e) => patch({ column: e.target.value });
+    $("#c-who", d.el).onchange = (e) => {
+      const to = e.target.value;
+      if (to && to !== "me") toast(`${agentName(to)} will take it when they're free`);
+      patch({ assignee: to });
+    };
+    $("#c-prio", d.el).onchange = (e) => patch({ priority: Number(e.target.value) });
+    $("#c-bypass", d.el).onchange = (e) => {
+      if (e.target.checked && !confirmBypass(`card #${c.id}`)) { e.target.checked = false; return; }
+      patch({ bypass: e.target.checked });
+    };
+    $("#c-form", d.el).onsubmit = (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      patch({ ...f, tags: f.tags.split(",").map((t) => t.trim()).filter(Boolean) });
+    };
+    $("#c-comment", d.el).onsubmit = (e) => { e.preventDefault(); const text = new FormData(e.target).get("text").trim(); if (text) patch({ comment: text }); };
+    $("#c-del", d.el).onclick = async () => {
+      if (!confirm(`Delete card #${c.id} "${c.title}" and its history?`)) return;
+      try { await api(`/api/cards/${cid}`, { method: "DELETE" }); d.close(); load(); } catch (err) { fail(err); }
+    };
+  }
+
+  function newCardDrawer(b, col) {
+    const d = openDrawer(`${drawerHead(`New card on ${esc(b.name)}`, "Assign it to a teammate and they do it when they have time.")}
+      <form class="drawer-body" id="n-form">
+        <label class="field">Title<input class="input" name="title" required></label>
+        <label class="field">Details (Markdown)<textarea class="input" name="body" rows="7" placeholder="What should be done, what you know, links…"></textarea></label>
+        <label class="field">Link (optional)<input class="input" name="link"></label>
+        <div class="kgrid3">
+          <label class="field">Column<select class="input" name="column">${b.columns.map((x) => `<option ${x.name === (col ?? b.columns[0].name) ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+          <label class="field">Assigned to<select class="input" name="assignee">${assigneeOptions("")}</select></label>
+          <label class="field">Priority<select class="input" name="priority">${PRIO.map((p, i) => `<option value="${i}">${p}</option>`).join("")}</select></label>
+        </div>
+        <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" name="bypass"><span><b>Bypass</b>: work on this card runs tools without asking (⚠ shell commands too)</span></label>
+      </form>
+      <div class="drawer-foot"><span class="grow"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="n-save">${ICON.plus}Add card</button></div>`);
+    $("[name=title]", d.el).focus();
+    $("#n-save", d.el).onclick = async () => {
+      const f = Object.fromEntries(new FormData($("#n-form", d.el)));
+      if (!f.title.trim()) return $("[name=title]", d.el).focus();
+      if (f.bypass && !confirmBypass("this card")) return;
+      try { await api(`/api/boards/${b.id}/cards`, { method: "POST", body: { ...f, bypass: !!f.bypass, priority: Number(f.priority) } }); d.close(); load(); } catch (e) { fail(e); }
+    };
+  }
+
+  function boardDrawer(b) {
+    const cols = b ? b.columns.map((c) => c.name + (c.done ? " (done)" : "")).join("\n") : "To do\nDoing\nDone (done)";
+    const d = openDrawer(`${drawerHead(b ? `Board: ${esc(b.name)}` : "New board", "Columns in order, one per line. Add “(done)” to columns for finished cards: those aren't queued or waiting for anyone.")}
+      <form class="drawer-body" id="b-form">
+        <label class="field">Name<input class="input" name="name" value="${esc(b?.name ?? "")}" required></label>
+        <label class="field">What it's for<input class="input" name="description" value="${esc(b?.description ?? "")}"></label>
+        <label class="field">Columns<textarea class="input mono" name="columns" rows="6">${esc(cols)}</textarea></label>
+        <div class="grid grid-2">
+          <label class="field">Kept by (sees it in every prompt)<select class="input" name="owner"><option value="">Nobody</option>${team.agents.map((a) => `<option value="${esc(a.handle)}" ${a.handle === b?.owner ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>
+          <label class="field">Reports go to<select class="input" name="report_to"><option value="">No chat</option>${team.chats.map((c) => `<option value="${esc(c.id)}" ${c.id === b?.report_to ? "selected" : ""}>${esc(c.title || "Untitled chat")}</option>`).join("")}</select></label>
+        </div>
+        <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" name="agents_move" ${b?.agents_move ? "checked" : ""}><span>Agents may move cards between columns (otherwise only you do)</span></label>
+        <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" name="bypass" ${b?.bypass ? "checked" : ""}><span><b>Bypass</b>: all card work on this board runs tools without asking (⚠ shell commands too)</span></label>
+      </form>
+      <div class="drawer-foot">${b ? `<button class="btn danger ghost" id="b-del">${ICON.trash}Delete board</button>` : ""}<span class="grow"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="b-save">${b ? "Save" : "Create board"}</button></div>`);
+    $("#b-save", d.el).onclick = async () => {
+      const f = Object.fromEntries(new FormData($("#b-form", d.el)));
+      const body = { ...f, columns: f.columns.split("\n").map((x) => x.trim()).filter(Boolean), agents_move: !!f.agents_move, bypass: !!f.bypass };
+      if (body.bypass && !b?.bypass && !confirmBypass(`every card on the board "${f.name}"`)) return;
+      try {
+        const r = await api(b ? `/api/boards/${b.id}` : "/api/boards", { method: b ? "PATCH" : "POST", body });
+        d.close();
+        if (b) load(); else navigate(`/boards/${r.id}`);
+      } catch (e) { fail(e); }
+    };
+    if (b) $("#b-del", d.el).onclick = async () => {
+      if (!confirm(`Delete the board "${b.name}" with all ${b.cards.length} cards and their history?`)) return;
+      try { await api(`/api/boards/${b.id}`, { method: "DELETE" }); d.close(); navigate("/boards"); } catch (e) { fail(e); }
+    };
+  }
+
+  await load();
+  const reload = debounce(load, 400);
+  return {
+    update: (nid) => { state.id = nid ? Number(nid) : null; state.q = ""; state.mine = false; load(); },
+    onUi: (e) => {
+      if (e.kind === "boards" || e.kind === "tasks") {
+        reload();
+        if (state.openCard && e.cardId === state.openCard && $("#drawer-root").children.length) cardDrawer(state.openCard);
+      }
+    },
+  };
+}
 
 // ── notebook ─────────────────────────────────────────────────────────────
 async function viewNotebook(root) {
