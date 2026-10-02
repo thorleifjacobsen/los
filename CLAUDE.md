@@ -1,7 +1,7 @@
 # CLAUDE.md — los
 
 *los* (Norwegian: harbour pilot) is a personal AI assistant shaped like a chat app: a **team** of agents (Los 🧭,
-Mira 🔎, Finn 🛠️, Vera 📬, Ollie 👁️ the image analyst), each just a **name, a personality and a brain**, and **chats** with them. Los answers a
+Mira 🔎, Finn 🛠️, Vera 📬, Ollie 👁️ the image analyst and design reviewer, Kai 💡 the opportunity scout), each just a **name, a personality and a brain**, and **chats** with them. Los answers a
 chat unless someone is @mentioned; `@mira` (or `@team` for everyone) brings others in, and agents bring each other in
 the same way, visibly, in the chat (a "handoff"). Several agents can work in one chat at once; you can write to one
 while it works. Agents remember you (memories in every prompt) and set up **jobs** (cron) and **tasks** (later) that
@@ -89,7 +89,9 @@ src/mcp/server.ts       per-run MCP endpoint (127.0.0.1:<random>/mcp/<token>) th
 src/mcp/client.ts       external MCP servers (config/mcp.json) → registry plugins `<server>_<tool>`
 src/plugins/shell/      shell_run (bash in the workspace; sideEffect → approval, or "Allow for this chat")
 src/plugins/web/        web_search (SearXNG, else DuckDuckGo) and web_fetch (fetch.ts: local Readability → Markdown,
-                        "Page data" from JSON-LD/meta (prices, stock), headless-Chrome fallback via DevTools protocol)
+                        "Page data" from JSON-LD/meta (prices, stock), headless-Chrome fallback via DevTools protocol),
+                        web_screenshot (same browser: desktop 1440 / mobile 390 px, full_page in ≤4 parts of ~2 screens
+                        so models see them readably; saved in the chat folder or screenshots/<date>/, shown to seeing brains)
 src/plugins/files/      files_read/write/edit/list/search, confined to the workspace (realpath-checked)
 src/core/loop.ts        THE agent loop, for every brain: budget/limits, stall watchdog, inbox, stop, fallback, deltas
 src/core/session.ts     chats: mentions()/addressees(), chatView() (what one agent sees), saveMessage (turn, agent)
@@ -300,6 +302,9 @@ web/                    vanilla JS SPA (app.js), style.css, login.html. marked +
   Verified live: Claude Code describes the image correctly.
 - **Ollie** (`config/agents/ollie.md`, claude-code) is the one who looks. The free-model agents can't see images;
   their personalities say to @mention Ollie with the image link. Tested chain: Mira → @ollie → @mira → answer.
+- **Kai** (`config/agents/kai.md`, claude-2, 2026-10-02) scouts money: businesses with weak websites as leads, tool/
+  service ideas. His file deliberately doesn't name Ollie: he finds the design reviewer with `team_find` ("review a
+  website's design from screenshots" → ollie), so Ollie's first paragraph carries those words. He never contacts leads.
 - **Attaching:** the composer's 📎 (or pasting an image) uploads to `uploads/<date>/<time>-<name>` in the workspace
   and puts `![name](/files/…)` in the message; your messages show those as thumbnails.
 

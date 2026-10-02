@@ -134,6 +134,51 @@ async function resolvesPublic(settings: Settings, url: string) {
 
 /** Load `url` in a headless Chrome over the DevTools protocol and return the rendered HTML. No library needed. */
 async function renderInBrowser(browserUrl: string, url: string): Promise<string> {
+  return inBrowser(browserUrl, url, {}, async (send) => {
+    const r = await send("Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
+    return r.result?.result?.value ?? "";
+  });
+}
+
+export const VIEWPORTS = { desktop: { width: 1440, height: 900, mobile: false }, mobile: { width: 390, height: 844, mobile: true } };
+const MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+
+/**
+ * Screenshots of `url` as JPEG, in a desktop or phone-sized window: the first screen, or with `fullPage` the whole
+ * scrolled page in parts (each about two screens tall, so a model sees them at a readable size), at most `maxParts`.
+ * Public addresses only, like web_fetch.
+ */
+export async function screenshot(settings: Settings, browserUrl: string, url: string, o: { device: keyof typeof VIEWPORTS; fullPage: boolean; maxParts?: number }) {
+  await resolvesPublic(settings, url);
+  const vp = VIEWPORTS[o.device];
+  return inBrowser(browserUrl, url, { viewport: vp, ua: vp.mobile ? MOBILE_UA : undefined }, async (send) => {
+    let height = vp.height;
+    if (o.fullPage) {
+      // Scroll through once so lazy images load, then measure.
+      await send("Runtime.evaluate", { expression: "(async () => { for (let y = 0; y < document.documentElement.scrollHeight && y < 20000; y += innerHeight) { scrollTo(0, y); await new Promise(r => setTimeout(r, 150)); } scrollTo(0, 0); })()", awaitPromise: true });
+      await new Promise((r) => setTimeout(r, 500));
+      const m = await send("Runtime.evaluate", { expression: "Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)", returnByValue: true });
+      height = Math.max(Number(m.result?.result?.value) || vp.height, vp.height);
+    }
+    const t = await send("Runtime.evaluate", { expression: "[document.title, location.href]", returnByValue: true });
+    const [title, finalUrl] = (t.result?.result?.value ?? []) as string[];
+    const part = vp.mobile ? 1600 : 1800, max = o.maxParts ?? 4;
+    const parts: { bytes: Buffer; y: number; height: number }[] = [];
+    for (let y = 0; y < height && parts.length < max; y += part) {
+      const h = Math.min(part, height - y);
+      const shot = await send("Page.captureScreenshot", {
+        format: "jpeg", quality: 80, captureBeyondViewport: o.fullPage, clip: { x: 0, y, width: vp.width, height: h, scale: 1 },
+      });
+      if (!shot.result?.data) throw new Error(`the browser couldn't take the screenshot${shot.error ? `: ${shot.error.message}` : ""}`);
+      parts.push({ bytes: Buffer.from(shot.result.data, "base64"), y, height: h });
+    }
+    return { parts, width: vp.width, pageHeight: height, cut: parts.at(-1)!.y + parts.at(-1)!.height < height, title: title || undefined, url: finalUrl || url };
+  });
+}
+
+/** Open `url` in a fresh tab of the headless Chrome, wait for it to load, run `fn` with a DevTools `send`, close the tab. */
+async function inBrowser<T>(browserUrl: string, url: string, o: { viewport?: { width: number; height: number; mobile: boolean }; ua?: string },
+  fn: (send: (method: string, params?: object) => Promise<any>) => Promise<T>): Promise<T> {
   // Chrome only answers DevTools requests addressed to an IP or localhost, so resolve the service name first.
   const u = new URL(browserUrl);
   if (!/^[\d.]+$|^localhost$/.test(u.hostname)) u.hostname = (await lookup(u.hostname)).address;
@@ -155,13 +200,13 @@ async function renderInBrowser(browserUrl: string, url: string): Promise<string>
   });
   try {
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error("could not reach the browser")); });
-    await send("Network.setUserAgentOverride", { userAgent: UA, acceptLanguage: HEADERS["accept-language"] });
+    await send("Network.setUserAgentOverride", { userAgent: o.ua ?? UA, acceptLanguage: HEADERS["accept-language"] });
+    if (o.viewport) await send("Emulation.setDeviceMetricsOverride", { width: o.viewport.width, height: o.viewport.height, deviceScaleFactor: 1, mobile: o.viewport.mobile });
     await send("Page.enable");
     await send("Page.navigate", { url });
     await Promise.race([onLoad, new Promise((r) => setTimeout(r, 25_000))]);
     await new Promise((r) => setTimeout(r, 1500)); // let late scripts fill the page in
-    const r = await send("Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
-    return r.result?.result?.value ?? "";
+    return await fn(send);
   } finally {
     ws.close();
     fetch(`${base}/json/close/${target.id}`).catch(() => {});
