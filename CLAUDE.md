@@ -382,7 +382,8 @@ web/                    vanilla JS SPA (app.js), style.css, login.html. marked +
 - **Agent queue** (`queueCards()`, on every assignment and in `scheduleDue` every 20 s): an agent with cards assigned
   (not in a done column) gets **one** card task at a time, priority then oldest first. When it ends
   (`afterCardTask()`), the result is logged on the card and a card the agent left with itself goes back to `me`.
-- **Rules:** only you move cards between columns unless the board has `agents_move`; agents must comment when they
+- **Rules:** agents may move cards and edit boards (`boards_update`: name, description, columns) unless you lock a
+  board (`agents_move` = 0, "Agents may move cards" unticked; default on since 2026-10-02); agents must comment when they
   reassign; agent→agent passes are capped at 5 (`MAX_PASSES`) until you touch the card; only you set bypass (board or
   card → the card task's bypass). Agents see their boards (owned or with cards assigned) + your recent moves/comments
   in the system prompt (`boardsContext()`), which is how Kai learns from rejected leads.

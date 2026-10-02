@@ -3,7 +3,7 @@
 import type { App } from "../../app.js";
 import { definePlugin, defineTool, z } from "../../tools/define.js";
 import {
-  SCHEMA, ME, addCard, boardsContext, cardText, columnsOf, createBoard, getBoard, getCard, parseColumns, updateCard,
+  SCHEMA, ME, addCard, boardsContext, cardText, columnsOf, createBoard, getBoard, getCard, parseColumns, updateBoard, updateCard,
   type BoardRow, type CardRow,
 } from "../../core/boards.js";
 
@@ -39,11 +39,27 @@ export default (app: App) => definePlugin({
         name: z.string(),
         description: z.string().optional(),
         columns: z.array(z.string()).min(1).describe('Column names in order; add " (done)" to finished ones'),
-        agents_can_move: z.boolean().optional().describe("Let agents move cards between columns (default: only the user)"),
+        agents_can_move: z.boolean().optional().describe("Let agents move cards between columns (default true; false locks it to the user)"),
       }),
       run: async ({ name, description, columns, agents_can_move }, ctx) => {
         const id = createBoard(ctx.db, { name, description, columns: parseColumns(columns), owner: ctx.agent.name, agentsMove: agents_can_move });
         return `Created board "${name}" (#${id}).`;
+      },
+    }),
+    defineTool({
+      name: "boards_update",
+      description: "Rename a board, change its description, or change its columns (the full list in order; add \" (done)\" " +
+        "to finished ones). A column that still has cards can't be removed: move its cards first.",
+      tags: ["kanban", "board", "rename", "columns", "edit"],
+      schema: z.object({
+        board: z.string().describe("Board name or id"),
+        name: z.string().optional(),
+        description: z.string().optional(),
+        columns: z.array(z.string()).min(1).optional(),
+      }),
+      run: async ({ board, name, description, columns }, ctx) => {
+        const b = updateBoard(ctx.db, board, { name, description, columns: columns ? parseColumns(columns) : undefined });
+        return `Board "${b.name}" (#${b.id}): ${columnsOf(b).map((c) => c.name + (c.done ? " (done)" : "")).join(", ")}.`;
       },
     }),
     defineTool({
@@ -107,8 +123,8 @@ export default (app: App) => definePlugin({
     }),
     defineTool({
       name: "cards_update",
-      description: "Change a card: comment on it, edit fields, move it to another column (only on boards that let agents " +
-        "move cards), or hand it on: assignee \"me\" when you need the user's decision or input, a teammate's handle when " +
+      description: "Change a card: comment on it, edit fields, move it to another column (unless the user locked the " +
+        "board), or hand it on: assignee \"me\" when you need the user's decision or input, a teammate's handle when " +
         "they should do the next part (find them with team_find). Handing on needs a comment saying why and what's needed.",
       tags: ["kanban", "card", "update", "move", "assign", "comment", "handoff"],
       schema: z.object({

@@ -2104,7 +2104,7 @@ async function viewBoards(root, id) {
     root.innerHTML = `<div class="page page-wide">
       <div class="page-head"><div><div class="small"><a href="/boards">← Boards</a></div>
           <h1 class="row" style="gap:10px">${esc(b.name)}${b.owner ? face(b.owner, 26) : ""}${b.bypass ? `<span class="chip warn" title="Card work runs tools without asking">⚠ Bypass</span>` : ""}</h1>
-          <p>${b.description ? esc(b.description) : ""}${b.owner ? ` <span class="faint">Kept by ${esc(agentName(b.owner))}.</span>` : ""} <span class="faint">${b.agents_move ? "Agents may move cards." : "Only you move cards between columns."}${b.report_title ? ` Reports to “${esc(b.report_title)}”.` : ""}</span></p></div>
+          <p>${b.description ? esc(b.description) : ""}${b.owner ? ` <span class="faint">Kept by ${esc(agentName(b.owner))}.</span>` : ""} <span class="faint">${b.agents_move ? "" : "Only you move cards between columns."}${b.report_title ? ` Reports to “${esc(b.report_title)}”.` : ""}</span></p></div>
         <div class="actions"><input class="input" id="kq" placeholder="Filter…" value="${esc(state.q)}" style="width:160px">
           <label class="check small"><input type="checkbox" id="kmine" ${state.mine ? "checked" : ""}>Waiting for me${b.mine ? ` (${b.mine})` : ""}</label>
           <button class="btn" id="kset">${ICON.edit}Board</button><button class="btn primary" id="kadd">${ICON.plus}New card</button></div></div>
@@ -2295,7 +2295,7 @@ async function viewBoards(root, id) {
           <label class="field">Kept by (sees it in every prompt)<select class="input" name="owner"><option value="">Nobody</option>${team.agents.map((a) => `<option value="${esc(a.handle)}" ${a.handle === b?.owner ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>
           <label class="field">Reports go to<select class="input" name="report_to"><option value="">No chat</option>${team.chats.map((c) => `<option value="${esc(c.id)}" ${c.id === b?.report_to ? "selected" : ""}>${esc(c.title || "Untitled chat")}</option>`).join("")}</select></label>
         </div>
-        <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" name="agents_move" ${b?.agents_move ? "checked" : ""}><span>Agents may move cards between columns (otherwise only you do)</span></label>
+        <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" name="agents_move" ${!b || b.agents_move ? "checked" : ""}><span>Agents may move cards between columns (untick to lock that to you)</span></label>
         <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" name="bypass" ${b?.bypass ? "checked" : ""}><span><b>Bypass</b>: all card work on this board runs tools without asking (⚠ shell commands too)</span></label>
       </form>
       <div class="drawer-foot">${b ? `<button class="btn danger ghost" id="b-del">${ICON.trash}Delete board</button>` : ""}<span class="grow"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="b-save">${b ? "Save" : "Create board"}</button></div>`);

@@ -405,7 +405,7 @@ ok("security + profile: internal addresses refused (allow_internal opens), TOTP 
   const B = await import("../src/core/boards.js");
   const n = (sql: string, ...a: unknown[]) => (app.db.prepare(sql).get(...a) as any).n;
   app.settings.agents.mira.tools = [...app.settings.agents.mira.tools, "cards_*"];
-  const bid = B.createBoard(app.db, { name: "Leads", columns: B.parseColumns(["New", "Approved", "Not a lead (done)"]), owner: "mira" });
+  const bid = B.createBoard(app.db, { name: "Leads", columns: B.parseColumns(["New", "Approved", "Not a lead (done)"]), owner: "mira", agentsMove: false });
   const c1 = B.addCard(app, "leads", { title: "Rørlegger AS", key: "Rorlegger.no" }, "mira");
   assert.throws(() => B.addCard(app, bid, { title: "igjen", key: "rorlegger.no" }, "mira"), /already has a card with key "rorlegger.no"/);
   assert.throws(() => B.updateCard(app, c1, { column: "Approved" }, "mira"), /only the user moves/);
@@ -426,6 +426,11 @@ ok("security + profile: internal addresses refused (allow_internal opens), TOTP 
   assert.equal(B.getCard(app.db, c3).assignee, "me", "then the next card, after the first");
   assert.equal(n("SELECT count(*) n FROM tasks WHERE card_id = ? AND status = 'done'", c3), 1);
   assert.equal(B.needsYou(app.db), 2);
+  const open = B.createBoard(app.db, { name: "Ideas", columns: B.parseColumns(["Inbox", "Done (done)"]) });
+  const c4 = B.addCard(app, open, { title: "Idé" }, "mira");
+  assert.equal(B.updateCard(app, c4, { column: "Done" }, "mira").col, "Done", "agents move cards by default");
+  assert.throws(() => B.updateBoard(app.db, open, { columns: B.parseColumns(["Inbox"]) }), /still have cards: Done/);
+  assert.equal(B.updateBoard(app.db, "ideas", { name: "Idéer", columns: B.parseColumns(["Inbox", "Later", "Done (done)"]) }).name, "Idéer");
 }
 ok("boards: keys dedupe, only you move cards (unless allowed), hand-ons need a reason and are capped, agents work their cards one at a time, results land on the card and it comes back to you");
 

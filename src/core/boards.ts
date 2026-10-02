@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS boards (
   description TEXT,
   columns     TEXT NOT NULL,                  -- JSON [{name, done?}]: done columns hold finished cards (not queued, not "needs you")
   owner       TEXT,                           -- agent the board belongs to (it sees the board in every prompt), or null
-  agents_move INTEGER NOT NULL DEFAULT 0,     -- 1: agents may move cards between columns (else only you)
+  agents_move INTEGER NOT NULL DEFAULT 1,     -- 1: agents may move cards between columns (0: only you, for boards you lock)
   bypass      INTEGER NOT NULL DEFAULT 0,     -- 1: card work runs approval-needing tools without asking (set by you only)
   report_to   TEXT,                           -- chat that gets card-task reports
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -97,9 +97,25 @@ export function createBoard(db: DB, b: { name: string; description?: string; col
   if (!b.name.trim()) throw new BoardError("a board needs a name");
   if (db.prepare("SELECT 1 FROM boards WHERE lower(name) = lower(?)").get(b.name.trim())) throw new BoardError(`there's already a board called "${b.name.trim()}"`);
   const id = Number(db.prepare("INSERT INTO boards (name, description, columns, owner, agents_move, report_to) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(b.name.trim(), b.description ?? null, JSON.stringify(b.columns), b.owner ?? null, b.agentsMove ? 1 : 0, b.reportTo ?? null).lastInsertRowid);
+    .run(b.name.trim(), b.description ?? null, JSON.stringify(b.columns), b.owner ?? null, b.agentsMove === false ? 0 : 1, b.reportTo ?? null).lastInsertRowid);
   ui({ boardId: id });
   return id;
+}
+
+/** Rename a board, change its description or columns (a column that still has cards can't go). */
+export function updateBoard(db: DB, ref: number | string, p: { name?: string; description?: string | null; columns?: Column[] }) {
+  const old = getBoard(db, ref);
+  const cols = p.columns ?? columnsOf(old);
+  const used = (db.prepare("SELECT DISTINCT col FROM cards WHERE board_id = ?").all(old.id) as { col: string }[]).map((r) => r.col);
+  const gone = used.filter((c) => !cols.some((x) => x.name === c));
+  if (gone.length) throw new BoardError(`these columns still have cards: ${gone.join(", ")}. Move the cards first.`);
+  const name = p.name?.trim() || old.name;
+  if (name.toLowerCase() !== old.name.toLowerCase() && db.prepare("SELECT 1 FROM boards WHERE lower(name) = lower(?)").get(name))
+    throw new BoardError(`there's already a board called "${name}"`);
+  db.prepare("UPDATE boards SET name = ?, description = ?, columns = ? WHERE id = ?")
+    .run(name, p.description !== undefined ? p.description || null : old.description, JSON.stringify(cols), old.id);
+  ui({ boardId: old.id });
+  return getBoard(db, old.id);
 }
 
 export function logCard(db: DB, cardId: number, by: string, type: string, text?: string | null, data?: unknown) {

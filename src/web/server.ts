@@ -13,7 +13,7 @@ import { runAgent, workdir, requestContext } from "../core/loop.js";
 import { compactSession } from "../core/history.js";
 import { createSession, getSession, membersOf, addressees, mentions, join as joinChat, saveMessage, allowIn } from "../core/session.js";
 import { approvals, runs } from "../core/control.js";
-import { BoardError, ME, addCard, cardEvents, columnsOf, createBoard, deleteCard, getBoard, getCard, needsYou, parseColumns, updateCard, type BoardRow, type CardRow } from "../core/boards.js";
+import { BoardError, ME, addCard, cardEvents, columnsOf, createBoard, deleteCard, getBoard, getCard, needsYou, parseColumns, updateBoard, updateCard, type BoardRow, type CardRow } from "../core/boards.js";
 import { checkSchedule, fmtLocal, nextRun, sqlUtc, parseWhen } from "../core/time.js";
 import { exportConversation } from "../core/conversation.js";
 import { WORKSPACE, wsPath, listDir, searchWorkspace, isPrivatePath, setShared, resolveShared, moveShared, dropShared } from "../core/workspace.js";
@@ -635,7 +635,7 @@ export function startWebServer(app: App, opts: { port: number; worker: { current
   route("POST", "/api/boards", async (req) => {
     const b = boardBody(await body(req));
     const id = boardsDo(() => createBoard(db, { name: String(b.name ?? ""), description: b.description || undefined,
-      columns: parseColumns(b.columns ?? ["To do", "Doing", "Done (done)"]), owner: b.owner || null, agentsMove: !!b.agents_move, reportTo: b.report_to || null }));
+      columns: parseColumns(b.columns ?? ["To do", "Doing", "Done (done)"]), owner: b.owner || null, agentsMove: b.agents_move !== false, reportTo: b.report_to || null }));
     if (b.bypass) db.prepare("UPDATE boards SET bypass = 1 WHERE id = ?").run(id);
     return boardOut(getBoard(db, id));
   });
@@ -646,14 +646,8 @@ export function startWebServer(app: App, opts: { port: number; worker: { current
   route("PATCH", "/api/boards/:id", async (req) => {
     const old = boardsDo(() => getBoard(db, req.params.id));
     const b = boardBody(await body(req));
-    const cols = b.columns ? boardsDo(() => parseColumns(b.columns)) : columnsOf(old);
-    const used = (db.prepare("SELECT DISTINCT col FROM cards WHERE board_id = ?").all(old.id) as { col: string }[]).map((r) => r.col);
-    const gone = used.filter((c) => !cols.some((x) => x.name === c));
-    if (gone.length) throw bad(`these columns still have cards: ${gone.join(", ")}. Move them first.`);
-    if (b.name && b.name.trim().toLowerCase() !== old.name.toLowerCase() && db.prepare("SELECT 1 FROM boards WHERE lower(name) = lower(?)").get(b.name.trim()))
-      throw bad(`there's already a board called "${b.name.trim()}"`);
-    db.prepare("UPDATE boards SET name = ?, description = ?, columns = ?, owner = ?, agents_move = ?, bypass = ?, report_to = ? WHERE id = ?").run(
-      b.name?.trim() || old.name, "description" in b ? b.description || null : old.description, JSON.stringify(cols),
+    boardsDo(() => updateBoard(db, old.id, { name: b.name, description: "description" in b ? b.description : undefined, columns: b.columns ? parseColumns(b.columns) : undefined }));
+    db.prepare("UPDATE boards SET owner = ?, agents_move = ?, bypass = ?, report_to = ? WHERE id = ?").run(
       "owner" in b ? b.owner || null : old.owner, "agents_move" in b ? (b.agents_move ? 1 : 0) : old.agents_move,
       "bypass" in b ? (b.bypass ? 1 : 0) : old.bypass, "report_to" in b ? b.report_to || null : old.report_to, old.id);
     notify("boards", { boardId: old.id });
