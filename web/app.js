@@ -141,6 +141,7 @@ const routes = [
   [/^\/overview$/, viewOverview, "overview"],
   [/^\/chat(?:\/([\w-]+))?$/, viewChat, "chat"],
   [/^\/tasks(?:\/(\d+))?$/, viewTasks, "tasks"],
+  [/^\/jobs$/, viewTasks, "tasks"],
   [/^\/boards(?:\/(\d+))?$/, viewBoards, "boards"],
   [/^\/agents$/, viewAgents, "agents"],
   [/^\/brains$/, viewBrains, "brains"],
@@ -1222,21 +1223,32 @@ function argsSummary(call) {
 }
 
 // ── tasks ────────────────────────────────────────────────────────────────
+// Two tabs, two addresses: /tasks (one-off work, the default) and /jobs (schedules). "Needs you" sits above both.
 async function viewTasks(root, initialId) {
-  await loadMeta();
-  const state = { filter: "", tasks: [], jobs: [], waiting: [], openId: null };
+  await Promise.all([loadMeta(), loadSpace()]);
+  const tabOf = () => (location.pathname === "/jobs" ? "jobs" : "tasks");
+  const state = { tab: tabOf(), filter: "", tasks: [], jobs: [], waiting: [], openId: null };
   root.innerHTML = `<div class="page">
-    <div class="page-head"><div><h1>Tasks &amp; jobs</h1><p>Work that runs on its own. Jobs repeat on a schedule; tasks run once, now or later. Several run at once, and each posts its result into the chat that asked for it. If one wants to do something that needs your OK, it waits here.</p></div>
+    <div class="page-head"><div><h1>Tasks &amp; jobs</h1><p>Work that runs on its own. Tasks run once, now or later; jobs repeat on a schedule. Several run at once, and each posts its result into the chat that asked for it. If one wants to do something that needs your OK, it waits here.</p></div>
       <div class="actions"><button class="btn" id="new-job">${ICON.clock}New job</button><button class="btn primary" id="new-task">${ICON.plus}New task</button></div></div>
     <div id="needs-you"></div>
-    <h2 class="section">Jobs <span class="count" id="job-count"></span></h2>
-    <div class="jobs" id="jobs"></div>
-    <h2 class="section">Tasks</h2>
-    <div class="row" style="margin-bottom:12px"><div class="tabs" id="tabs"></div></div>
-    <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Task</th><th>Agent</th><th>Status</th><th class="nowrap">Updated</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+    <div class="tabs page-tabs" id="page-tabs"></div>
+    <div id="tab-tasks">
+      <div class="row" style="margin-bottom:12px"><div class="tabs" id="tabs"></div></div>
+      <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Task</th><th>Agent</th><th>Status</th><th class="nowrap">Updated</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+    </div>
+    <div id="tab-jobs"><div class="card"><div class="table-wrap" id="jobs"></div></div></div>
   </div>`;
+  function showTab() {
+    $("#page-tabs", root).innerHTML = [["tasks", "Tasks", state.tasks.length], ["jobs", "Jobs", state.jobs.length]]
+      .map(([k, label, n]) => `<button data-tab="${k}" class="${state.tab === k ? "on" : ""}">${label}<span class="n">${n}</span></button>`).join("");
+    $$("#page-tabs button", root).forEach((b) => (b.onclick = () => navigate(b.dataset.tab === "jobs" ? "/jobs" : "/tasks")));
+    $("#tab-tasks", root).hidden = state.tab !== "tasks";
+    $("#tab-jobs", root).hidden = state.tab !== "jobs";
+  }
   async function load() {
     [state.tasks, state.jobs, state.waiting] = await Promise.all([api("/api/tasks"), api("/api/jobs"), api("/api/approvals")]);
+    showTab();
     renderNeedsYou();
     renderJobs();
     const counts = state.tasks.reduce((a, t) => ((a[t.status] = (a[t.status] ?? 0) + 1), a), {});
@@ -1271,36 +1283,37 @@ async function viewTasks(root, initialId) {
     })));
   }
   function renderJobs() {
-    $("#job-count", root).textContent = state.jobs.length;
-    $("#jobs", root).innerHTML = state.jobs.length ? state.jobs.map((j) => `<div class="job card ${j.enabled ? "" : "paused"}" data-job="${j.id}">
-        <div class="job-top"><span class="job-ic">${ICON.clock}</span><div class="grow" style="min-width:0"><div class="job-title ellipsis">${esc(j.title)}</div>
-          <div class="small muted">${esc(humanSchedule(j.schedule))}${j.agent ? ` · ${esc(j.agent)}` : ""}${j.bypass ? ` · <span class="chip warn" title="Bypass: runs tools without asking">⚠ bypass</span>` : ""}</div></div>
-          <label class="switch" title="${j.enabled ? "On: click to pause" : "Paused: click to resume"}"><input type="checkbox" data-jtoggle="${j.id}" ${j.enabled ? "checked" : ""}><span></span></label></div>
-        <div class="small faint ellipsis2">${esc(j.prompt)}</div>
-        <div class="job-foot small">
-          <span>${j.enabled ? `next <b>${esc(j.next_local ?? "—")}</b>` : "paused"}</span>
-          ${j.last_local ? `<span class="faint">· last ${esc(j.last_local)} ${j.last_status ? `<span class="status ${esc(j.last_status)}">${esc(j.last_status)}</span>` : ""}</span>` : ""}
-          <span class="grow"></span>
-          <button class="foot-btn" data-jrun="${j.id}" title="Run once now">${ICON.play}Run now</button>
-          <button class="foot-btn" data-jedit="${j.id}">${ICON.edit}Edit</button>
-        </div>
-        ${j.report_title ? `<div class="small faint">reports to <a href="/chat/${esc(j.report_to)}">${esc(j.report_title)}</a></div>` : ""}
-      </div>`).join("")
-      : `<div class="card"><div class="empty small">No jobs yet. Ask in Home ("every morning at 7, check…"), or create one here.</div></div>`;
+    const chatTitle = (id) => team.chats.find((c) => c.id === id)?.title;
+    $("#jobs", root).innerHTML = state.jobs.length ? `<table class="table jobs-table">
+      <thead><tr><th style="width:52px">On</th><th>Job</th><th>Schedule</th><th>Agent</th><th class="nowrap">Runs</th><th></th></tr></thead>
+      <tbody>${state.jobs.map((j) => `<tr class="${j.enabled ? "" : "paused"}" data-job="${j.id}">
+        <td><label class="switch" title="${j.enabled ? "On: click to pause" : "Paused: click to resume"}"><input type="checkbox" data-jtoggle="${j.id}" ${j.enabled ? "checked" : ""}><span></span></label></td>
+        <td class="job-cell"><div style="font-weight:550">${esc(j.title)}${j.bypass ? ` <span class="chip warn" title="Bypass: runs tools without asking">⚠ bypass</span>` : ""}</div><div class="small faint ellipsis" title="${esc(j.prompt)}">${esc(j.prompt.replace(/\s+/g, " "))}</div></td>
+        <td class="small nowrap">${esc(humanSchedule(j.schedule))}<div class="faint mono">${esc(j.schedule)}</div></td>
+        <td><div class="row nowrap">${j.agent ? avatar(j.agent, 22) + esc(agentName(j.agent)) : `<span class="faint">routing</span>`}</div>
+          <div class="small faint nowrap">→ ${j.report_to ? `<a href="/chat/${esc(j.report_to)}">${esc(j.report_title ?? chatTitle(j.report_to) ?? "chat")}</a>` : "no chat"}</div></td>
+        <td class="small nowrap"><div>Next: ${j.enabled ? esc(j.next_local ?? "—") : `<span class="faint">paused</span>`}</div>
+          <div class="faint">Last: ${j.last_local ? `${esc(j.last_local)}${j.last_status ? ` <a href="/tasks/${j.last_task}"><span class="status ${esc(j.last_status)}">${esc(j.last_status)}</span></a>` : ""}` : "never"}</div></td>
+        <td class="nowrap" style="text-align:right"><button class="icon-btn" data-jrun="${j.id}" title="Run once now">${ICON.play}</button><button class="icon-btn" data-jedit="${j.id}" title="Edit">${ICON.edit}</button></td>
+      </tr>`).join("")}</tbody></table>`
+      : `<div class="empty small">No jobs yet. Ask in a chat ("every morning at 7, check…"), or create one with New job.</div>`;
     $$("[data-jtoggle]", root).forEach((c) => (c.onchange = async () => { try { await api(`/api/jobs/${c.dataset.jtoggle}`, { method: "PATCH", body: { enabled: c.checked } }); load(); } catch (e) { fail(e); } }));
     $$("[data-jrun]", root).forEach((b) => (b.onclick = async () => { try { await api(`/api/jobs/${b.dataset.jrun}`, { method: "PATCH", body: { run_now: true } }); toast("Starting within half a minute"); load(); } catch (e) { fail(e); } }));
     $$("[data-jedit]", root).forEach((b) => (b.onclick = () => jobDrawer(state.jobs.find((j) => j.id == b.dataset.jedit))));
   }
   function jobDrawer(j) {
     const presets = [["0 7 * * *", "Every day 07:00"], ["30 7 * * 1-5", "Weekdays 07:30"], ["0 18 * * 0", "Sundays 18:00"], ["0 9 1 * *", "1st of the month"], ["every 1h", "Every hour"]];
-    const d = openDrawer(`${drawerHead(j ? `Job #${j.id}` : "New job", "Runs again and again on a schedule. Each result is posted into Home.")}
+    const d = openDrawer(`${drawerHead(j ? `Job #${j.id}` : "New job", "Runs again and again on a schedule. Each result is posted into the chat you pick.")}
       <form class="drawer-body" id="job-form">
         <label class="field">What should it do each time?<textarea class="input" name="prompt" rows="6" required placeholder="e.g. Check yr.no for Lillesand today. If it will rain, tell me when and how much.">${esc(j?.prompt ?? "")}</textarea></label>
         <label class="field">Title <input class="input" name="title" value="${esc(j?.title ?? "")}" placeholder="Morning weather"></label>
         <label class="field">Schedule <input class="input mono" name="schedule" required value="${esc(j?.schedule ?? "0 7 * * *")}">
           <span class="small faint">cron (minute hour day month weekday, your time zone) or "every 30m" / "every 2h"</span></label>
         <div class="chips">${presets.map(([v, l]) => `<button type="button" class="chip outline" data-preset="${esc(v)}" style="cursor:pointer">${esc(l)}</button>`).join("")}</div>
-        <label class="field">Agent<select class="input" name="agent">${agentOptions(j?.agent ?? "", { auto: true })}</select></label>
+        <div class="grid grid-2">
+          <label class="field">Agent<select class="input" name="agent">${agentOptions(j?.agent ?? "", { auto: true })}</select></label>
+          <label class="field">Reports go to<select class="input" name="report_to"><option value="">No chat (see the result under Tasks)</option>${team.chats.map((c) => `<option value="${esc(c.id)}" ${c.id === j?.report_to ? "selected" : ""}>${esc(c.title || "Untitled chat")}</option>`).join("")}</select></label>
+        </div>
         <label class="row" style="gap:8px;cursor:pointer"><input type="checkbox" name="bypass" ${j?.bypass ? "checked" : ""}><span><b>Bypass</b>: every run uses tools without asking (⚠ shell commands too)</span></label>
       </form>
       <div class="drawer-foot">${j ? `<button class="btn danger" id="j-del">${ICON.trash}Delete</button>` : ""}<span class="grow"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="j-save">${j ? "Save" : "Create job"}</button></div>`);
@@ -1312,7 +1325,8 @@ async function viewTasks(root, initialId) {
       try {
         if (j) await api(`/api/jobs/${j.id}`, { method: "PATCH", body: f });
         else await api("/api/jobs", { method: "POST", body: f });
-        d.close(); load();
+        d.close();
+        if (!j && state.tab !== "jobs") navigate("/jobs"); else load();
       } catch (e) { fail(e); }
     };
     const del = $("#j-del", d.el);
@@ -1380,7 +1394,7 @@ async function viewTasks(root, initialId) {
   if (initialId) showTask(Number(initialId));
   const reload = debounce(() => { load(); if (state.openId && $("#drawer-root").children.length) showTask(state.openId); }, 700);
   return {
-    update: (id) => { if (id) showTask(Number(id)); },
+    update: (id) => { state.tab = tabOf(); showTab(); if (id) showTask(Number(id)); },
     onUi: (e) => ["tasks", "approvals"].includes(e.kind) && reload(),
     onAgent: (e) => e.taskId && reload(),
   };
@@ -2079,7 +2093,7 @@ async function viewBoards(root, id) {
     const card = (c) => {
       const img = cardImage(c.image), t = c.task && OPEN_TASK.includes(c.task.status) ? c.task : null;
       return `<article class="kcard prio${c.priority} ${c.assignee === "me" ? "you" : ""}" draggable="true" data-card="${c.id}">
-        ${img ? `<img src="${esc(img)}" alt="" loading="lazy">` : ""}
+        ${img ? `<img src="${esc(img)}" alt="" loading="lazy" draggable="false">` : ""}
         <div class="kt">${esc(c.title)}</div>
         ${c.tags.length || c.link ? `<div class="kmeta">${c.tags.map((t) => `<span class="chip outline">${esc(t)}</span>`).join("")}${c.link ? `<span class="faint ellipsis">${esc(c.link.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, ""))}</span>` : ""}</div>` : ""}
         <div class="kfoot">${c.assignee ? `${whoFace(c.assignee, 18)}<span>${esc(whoName(c.assignee))}</span>` : `<span class="faint">unassigned</span>`}
@@ -2107,23 +2121,74 @@ async function viewBoards(root, id) {
     $("#kset", root).onclick = () => boardDrawer(b);
     $("#kadd", root).onclick = () => newCardDrawer(b);
     $$("[data-addto]", root).forEach((x) => (x.onclick = () => newCardDrawer(b, x.dataset.addto)));
+    // Dragging carries only our own type (no text or URL), so the browser doesn't offer to open it as a link
+    // (split view, new tab). Near the edges of a wide board, it scrolls.
+    let dragged = null;
     $$("[data-card]", root).forEach((el) => {
       el.onclick = () => cardDrawer(Number(el.dataset.card));
-      el.ondragstart = (e) => { e.dataTransfer.setData("text/plain", el.dataset.card); el.classList.add("dragging"); };
-      el.ondragend = () => el.classList.remove("dragging");
+      el.oncontextmenu = (e) => { e.preventDefault(); cardMenu(b.cards.find((x) => x.id === Number(el.dataset.card)), e.clientX, e.clientY); };
+      el.ondragstart = (e) => {
+        dragged = Number(el.dataset.card);
+        e.dataTransfer.clearData();
+        e.dataTransfer.setData("application/x-los-card", el.dataset.card);
+        e.dataTransfer.effectAllowed = "move";
+        el.classList.add("dragging");
+      };
+      el.ondragend = () => { dragged = null; el.classList.remove("dragging"); $$(".kcol.drop", root).forEach((x) => x.classList.remove("drop")); };
     });
+    const strip = $(".kanban", root);
+    strip.ondragover = (e) => {
+      if (dragged == null) return;
+      const r = strip.getBoundingClientRect(), edge = 80;
+      if (e.clientX < r.left + edge) strip.scrollLeft -= 18; else if (e.clientX > r.right - edge) strip.scrollLeft += 18;
+    };
     $$(".kcol", root).forEach((colEl) => {
-      colEl.ondragover = (e) => { e.preventDefault(); colEl.classList.add("drop"); };
-      colEl.ondragleave = () => colEl.classList.remove("drop");
-      colEl.ondrop = async (e) => {
+      colEl.ondragover = (e) => { if (dragged == null) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; colEl.classList.add("drop"); };
+      colEl.ondragleave = (e) => { if (!colEl.contains(e.relatedTarget)) colEl.classList.remove("drop"); };
+      colEl.ondrop = (e) => {
         e.preventDefault(); colEl.classList.remove("drop");
-        const cid = Number(e.dataTransfer.getData("text/plain")), c = b.cards.find((x) => x.id === cid);
-        if (!c || c.col === colEl.dataset.col) return;
-        c.col = colEl.dataset.col; drawBoard();
-        try { await api(`/api/cards/${cid}`, { method: "PATCH", body: { column: colEl.dataset.col } }); } catch (err) { fail(err); }
-        load();
+        const cid = dragged ?? Number(e.dataTransfer.getData("application/x-los-card"));
+        moveCard(cid, colEl.dataset.col);
       };
     });
+  }
+
+  async function moveCard(cid, col) {
+    const c = state.board.cards.find((x) => x.id === cid);
+    if (!c || c.col === col) return;
+    c.col = col; drawBoard();
+    try { await api(`/api/cards/${cid}`, { method: "PATCH", body: { column: col } }); } catch (err) { fail(err); }
+    load();
+  }
+  async function assignCard(cid, to) {
+    try { await api(`/api/cards/${cid}`, { method: "PATCH", body: { assignee: to } }); if (to && to !== "me") toast(`${agentName(to)} will take it when they're free`); } catch (err) { fail(err); }
+    load();
+  }
+
+  // Right-click (or long-press) on a card: move it, assign it, open it.
+  function cardMenu(c, x, y) {
+    if (!c) return;
+    $(".ctx-menu")?.remove();
+    const b = state.board;
+    const menu = h(`<div class="ctx-menu" role="menu">
+      <div class="ctx-h">Move to</div>
+      ${b.columns.map((col) => `<button role="menuitem" data-move="${esc(col.name)}" ${col.name === c.col ? "disabled" : ""}>${esc(col.name)}${col.name === c.col ? " ✓" : ""}</button>`).join("")}
+      <div class="ctx-h">Assign to</div>
+      ${[["me", "You"], ...team.agents.map((a) => [a.handle, `${a.name}${a.emoji ? ` ${a.emoji}` : ""}`]), ["", "Nobody"]].map(([k, l]) =>
+        `<button role="menuitem" data-assign="${esc(k)}" ${(c.assignee ?? "") === k ? "disabled" : ""}>${esc(l)}${(c.assignee ?? "") === k ? " ✓" : ""}</button>`).join("")}
+      <hr><button role="menuitem" data-open>Open card</button></div>`);
+    document.body.append(menu);
+    const r = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(x, innerWidth - r.width - 8)}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+    const close = () => { menu.remove(); removeEventListener("pointerdown", outside, true); removeEventListener("keydown", esc_); removeEventListener("scroll", close, true); removeEventListener("resize", close); };
+    const outside = (e) => { if (!menu.contains(e.target)) close(); };
+    const esc_ = (e) => e.key === "Escape" && close();
+    setTimeout(() => { addEventListener("pointerdown", outside, true); addEventListener("keydown", esc_); addEventListener("scroll", close, true); addEventListener("resize", close); });
+    $$("[data-move]", menu).forEach((x) => (x.onclick = () => { close(); moveCard(c.id, x.dataset.move); }));
+    $$("[data-assign]", menu).forEach((x) => (x.onclick = () => { close(); assignCard(c.id, x.dataset.assign); }));
+    $("[data-open]", menu).onclick = () => { close(); cardDrawer(c.id); };
+    menu.querySelector("button:not([disabled])")?.focus();
   }
 
   function evHtml(e) {

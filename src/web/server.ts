@@ -610,9 +610,10 @@ export function startWebServer(app: App, opts: { port: number; worker: { current
     if (b.schedule) try { checkSchedule(b.schedule); } catch (e) { throw bad((e as Error).message); }
     const schedule = b.schedule?.trim() ?? j.schedule, enabled = b.enabled ?? !!j.enabled;
     const next = b.run_now ? sqlUtc(new Date()) : enabled ? sqlUtc(nextRun(app.settings, schedule)) : null;
-    db.prepare("UPDATE jobs SET title = ?, prompt = ?, schedule = ?, agent = ?, enabled = ?, next_run = ?, bypass = ? WHERE id = ?")
+    if (b.report_to && !getSession(db, b.report_to)) throw bad("no such chat");
+    db.prepare("UPDATE jobs SET title = ?, prompt = ?, schedule = ?, agent = ?, enabled = ?, next_run = ?, bypass = ?, report_to = ? WHERE id = ?")
       .run(b.title ?? j.title, b.prompt ?? j.prompt, schedule, "agent" in b ? b.agent || null : j.agent, enabled || b.run_now ? 1 : 0, next,
-        "bypass" in b ? (b.bypass ? 1 : 0) : j.bypass, j.id);
+        "bypass" in b ? (b.bypass ? 1 : 0) : j.bypass, "report_to" in b ? b.report_to || null : j.report_to, j.id);
     notify("tasks");
     return jobView(db.prepare("SELECT * FROM jobs WHERE id = ?").get(j.id));
   });
