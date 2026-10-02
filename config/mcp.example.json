@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/toffe/Documents"],
+      "privacy": "local-only"
+    },
+    "homeassistant": {
+      "url": "http://homeassistant.local:8123/mcp",
+      "privacy": "local-only"
+    }
+  }
+}

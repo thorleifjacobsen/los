@@ -1,0 +1,45 @@
+{
+  "name": "los",
+  "version": "1.0.0",
+  "description": "los — personal AI assistant: chat + autonomous agents, own tools, MCP, private knowledge index",
+  "scripts": {
+    "start": "tsx src/cli/serve.ts",
+    "password": "tsx src/cli/password.ts",
+    "chat": "tsx src/cli/chat.ts",
+    "worker": "tsx src/cli/worker.ts",
+    "ingest": "tsx src/cli/ingest.ts",
+    "task": "tsx src/cli/task.ts",
+    "tools": "tsx src/cli/tools.ts",
+    "test": "tsx test/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@highlightjs/cdn-assets": "^11.12.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@mozilla/readability": "^0.6.0",
+    "better-sqlite3": "^13.0.3",
+    "dompurify": "^3.4.16",
+    "imapflow": "^2.2.0",
+    "linkedom": "^0.18.13",
+    "mailparser": "^3.9.33",
+    "marked": "^18.0.14",
+    "qrcode": "^1.5.4",
+    "sqlite-vec": "^0.1.9",
+    "tsx": "^4.23.15",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
+    "undici": "^7.30.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^26.6.3",
+    "@types/qrcode": "^1.5.6",
+    "@types/turndown": "^5.0.6",
+    "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "private": true
+}

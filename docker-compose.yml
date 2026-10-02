@@ -1,0 +1,54 @@
+# los — one container, no dev/prod split. Data + config live next to this file and survive rebuilds.
+#   docker compose up -d --build
+services:
+  los:
+    build: .
+    image: los
+    container_name: los
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data              # SQLite db, inbox, Claude's workspace
+      - ./config:/app/config          # settings.yaml, agents/, mcp.json (editable from the UI)
+      - ${CLAUDE_DIR:-/home/deploy/.claude}:/home/node/.claude   # shared Claude Code login (same uid 1000); CLAUDE_DIR in .env
+    ports:
+      - "127.0.0.1:7001:7001"
+      # No second hostname for workspace pages? Use a second port instead (its own origin) and set
+      # web.files_url: http://<host>:7002 in config/settings.yaml, plus FILES_PORT=7002 in .env:
+      # - "127.0.0.1:7002:7002"
+    environment:
+      - FILES_PORT=${FILES_PORT:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Web search for agents (web_search). Internal only: no host port; los reaches it as http://searxng:8080.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: los-searxng
+    restart: unless-stopped
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?set SEARXNG_SECRET in .env (openssl rand -hex 32)}
+    volumes:
+      - ./services/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    mem_limit: 512m
+
+  # Optional headless Chrome for pages that only render with JavaScript (web_fetch's fallback). Off by default, it
+  # costs a few hundred MB: `docker compose --profile browser up -d`, then set web.browser_url: http://browser:9222
+  browser:
+    image: chromedp/headless-shell:latest
+    container_name: los-browser
+    profiles: [browser]
+    restart: unless-stopped
+    shm_size: 256m
+    mem_limit: 768m
+
+# All three share this project's own network (los reaches them as searxng / browser). Deliberately NOT the box's
+# shared "infra" network: nothing an agent can reach should sit next to other projects' databases and services.
+networks:
+  default:
+    name: los

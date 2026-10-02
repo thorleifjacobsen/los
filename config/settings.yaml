@@ -1,0 +1,102 @@
+# los settings. Secrets never go here — only the NAME of the env var holding them.
+# Editable from the web UI (Settings); changes apply without a restart.
+
+db: data/los.db
+default_agent: los # answers in a chat unless someone else is @mentioned
+timezone: Europe/Oslo # "now" for agents, job schedules, run_at
+worker:
+  concurrency: 3 # background tasks at once
+chat:
+  auto_compact: 0.8 # compact a chat when its context is this full (0 = never)
+
+# Every LLM the system can use (managed from the Brains page in the UI; env vars/secrets live in data/brain-env.json). Agents (config/agents/*.md) pick one by name,
+# and any single task can override it.
+brains:
+  claude-code:
+    # default. Runtime: Claude Code runs the agent loop on the server's own `claude` login (no API key),
+    type: claude-code # but has no tools of its own: it only gets los's tools (over MCP), and los runs every call.
+    label: Claude · main
+  # Nothing below runs on this server yet: no Ollama here, and no API keys set.
+  local:
+    # Ollama — private stuff runs here
+    type: openai # OpenAI-compatible API (Ollama, llama.cpp, vLLM, LM Studio)
+    base_url: http://localhost:11434/v1
+    model: qwen3:14b
+    local: true
+  local-small:
+    type: openai
+    base_url: http://localhost:11434/v1
+    model: qwen3:4b
+    local: true
+  claude:
+    type: anthropic
+    model: claude-sonnet-5-5
+    api_key_env: ANTHROPIC_API_KEY
+  openrouter:
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    model: deepseek/deepseek-chat
+    api_key_env: OPENROUTER_API_KEY
+  codex:
+    # own login in data/accounts/codex: log in from the Brains page
+    type: codex
+    label: Codex
+    args: [ "-s", "danger-full-access" ]
+  opencode-free:
+    # opencode with its free models (cost 0). It must run as plain opencode (the free tier refuses changed
+    # tools/permissions/prompt), so its own built-in tools stay on next to los's. 
+    type: opencode
+    label: Free · opencode
+    model: opencode/big-pickle
+    stall_minutes: 3 # the free queue sometimes goes silent for minutes; after 3 los gives up (the agent's fallback brain, if any, takes over)
+    args: [ "--auto" ]
+  claude-2:
+    type: claude-code
+    label: Claude · account 2
+    account: claude-2
+
+# Embeddings for semantic search. Must be local (it sees all your documents).
+# Off until there is a local model: search is keyword-only (FTS5) meanwhile.
+# embeddings:
+#   brain: local                 # reuses that brain's base_url
+#   model: bge-m3                # multilingual, good for Norwegian
+#   dim: 1024
+
+# Ingestion: the brain that summarises/tags mail and documents. Refused if not local.
+ingest:
+  brain: local-small
+  enrich: false # true once a local model is reachable
+
+# Where knowledge comes from. `npm run ingest` syncs all of them.
+sources:
+  - id: workspace
+    type: files
+    path: ./data/workspace # the shared workspace (Workspace page): everything readable in it gets indexed
+    private: false         # default; make single files or whole folders private on the Workspace page
+  # - id: mail:work
+  #   type: imap
+  #   host: imap.example.no
+  #   port: 993
+  #   user_env: MAIL_USER
+  #   pass_env: MAIL_PASS
+  #   mailbox: INBOX
+  #   since_days: 365
+  #   private: true              # mail is private unless you say otherwise
+
+# Privacy is per item: every memory and document is public or private (toggle them in Notebook / Files).
+# Private items are never shown to a cloud brain; a chat where a local brain read one stays on local brains.
+privacy:
+  memory_default: public # new memories, when the agent doesn't say. Agents mark sensitive ones private themselves
+  local_only: [] # whole tools a cloud brain may never use, on top of that (globs)
+
+# Tasks without an explicit agent are routed by the first matching rule.
+routing:
+  - match: "\\b(code|repo|bug|refactor|test|PR)\\b"
+    agent: finn
+  - match: "\\b(research|compare|find out)\\b"
+    agent: mira
+
+web:
+  files_url: https://los-files.tjlabs.no   # workspace pages on their own origin (localStorage works); unset → sandboxed on los's address
+  searxng_url: http://searxng:8080     # the searxng service in docker-compose.yml (unset → DuckDuckGo's HTML page)
+  browser_url: http://browser:9222     # optional headless Chrome for JavaScript pages (compose profile "browser"); unset → no fallback

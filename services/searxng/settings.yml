@@ -1,0 +1,14 @@
+# SearXNG for los's web_search: a private metasearch engine, reached only from the los container (http://searxng:8080).
+# The secret comes from SEARXNG_SECRET (.env). Only the JSON API is needed; the limiter is off (one trusted client).
+use_default_settings: true
+general:
+  instance_name: los-search
+search:
+  safe_search: 0
+  formats: [html, json]
+server:
+  limiter: false
+  image_proxy: false
+  public_instance: false
+ui:
+  static_use_hash: true
