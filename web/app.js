@@ -167,6 +167,7 @@ async function render() {
   const navKey = key === "chat" ? "home" : key;
   $$("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === navKey));
   $("#nav").classList.remove("open");
+  document.body.dataset.view = key;
   // Chat → chat keeps the view (only the session changes), everything else rebuilds.
   if (current?.key === key && current.update) return current.update(...params);
   current?.destroy?.();
@@ -482,7 +483,7 @@ async function viewChat(root, initialId) {
     <aside class="room-info" id="room-info" hidden></aside>
   </div>`;
   const space = $("#space", root);
-  const state = { id: null, session: null, tick: null, live: {}, lastSign: {}, started: {}, showArch: new Set(), files: [], work: { jobs: [], tasks: [] }, infoOpen: localStorage.getItem("los.info") === "1" && innerWidth > 860 }; // on a phone it covers the chat: only on request
+  const state = { id: null, session: null, tick: null, live: {}, lastSign: {}, started: {}, showArch: new Set(), files: [], work: { jobs: [], tasks: [] }, folds: new Map(), pinned: true, infoOpen: localStorage.getItem("los.info") === "1" && innerWidth > 860 }; // on a phone it covers the chat: only on request
   // What a running answer has streamed so far, from the server: a chat opened mid-answer continues where it is.
   const seedLive = (s) => {
     for (const l of s.live ?? []) {
@@ -501,10 +502,11 @@ async function viewChat(root, initialId) {
     const el = $("#space-side", root);
     if (!$("#side-top", el)) {
       el.innerHTML = `<div id="side-top">
-          <div class="space-head">${MARK}<div><b>los</b><div class="small faint">${plural(team.agents.length, "teammate")}</div></div></div>
+          <div class="space-head"><button class="icon-btn mobile-only" id="open-nav" title="Menu" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>${MARK}<div><b>los</b><div class="small faint">${plural(team.agents.length, "teammate")}</div></div></div>
           <a class="btn primary new-chat" href="/chat/new" title="New chat (Alt+N)">${ICON.plus}New chat</a>
           <div class="search side-search">${ICON.search}<input class="input" id="chat-q" placeholder="Search chats (Ctrl+K)" autocomplete="off"></div>
         </div><div id="side-lists"></div>`;
+      $("#open-nav", el).onclick = () => { space.classList.remove("side-open"); $("#nav").classList.add("open"); };
       const q = $("#chat-q", el);
       const run = debounce(async () => {
         side.q = q.value.trim();
@@ -561,6 +563,15 @@ async function viewChat(root, initialId) {
       <div class="room-scroll" id="scroll"><div class="msgs" id="msgs"></div></div>
       ${s.task ? "" : composerHtml()}`;
     if (!s.task) wireComposer();
+    // Follow the bottom while you're there (new text, an image that finishes loading, the keyboard opening on a
+    // phone); once you scroll up, leave the view where you put it.
+    const scroll = $("#scroll", main), box = $("#msgs", main);
+    scroll.addEventListener("scroll", () => { state.pinned = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 140; }, { passive: true });
+    const follow = () => { if (state.pinned) scroll.scrollTop = scroll.scrollHeight; };
+    new ResizeObserver(follow).observe(box);
+    new ResizeObserver(follow).observe(scroll);
+    // Remember what you opened or closed yourself (the click comes before the details changes, hence !open).
+    box.addEventListener("click", (e) => { const d = e.target.closest("details[data-fold] > summary")?.parentElement; if (d) state.folds.set(d.dataset.fold, !d.open); });
     renderHead();
     renderMsgs(true);
     renderInfo();
@@ -602,7 +613,7 @@ async function viewChat(root, initialId) {
   // ── composer, with @mention autocomplete ──
   function composerHtml() {
     const s = state.session;
-    const ph = `Message ${agentName(s.agent)}. @ to bring someone in, @team to ask everyone`;
+    const ph = innerWidth <= 520 ? `Message ${agentName(s.agent)} · @ to bring someone in` : `Message ${agentName(s.agent)}. @ to bring someone in, @team to ask everyone`;
     return `<form class="composer" id="composer"><div class="composer-box">
       <textarea rows="1" placeholder="${esc(ph)}" required></textarea>
       <div class="composer-bar">
@@ -741,7 +752,23 @@ async function viewChat(root, initialId) {
     const working = `<div class="working"><span class="typing"><i></i><i></i><i></i></span><span>${esc(agentName(who))} is ${lv?.thinking && !lv.text ? "thinking" : "working"}<span data-elapsed></span></span>
       <button type="button" class="foot-btn" data-stop="${esc(who)}" title="Stop ${esc(agentName(who))}">${ICON.stop}Stop</button></div>`;
     if (!lv || (!lv.text && !lv.thinking)) return working;
-    return `${lv.thinking ? thinkingHtml(lv.thinking, !lv.text) : ""}${lv.text ? `<div class="md live-md">${md(lv.text)}<span class="caret"></span></div>` : ""}${working}`;
+    return `${lv.thinking ? thinkingHtml(lv.thinking, true).replace('class="thinking"', 'class="thinking live"') : ""}${lv.text ? `<div class="md live-md">${md(lv.text)}<span class="caret"></span></div>` : ""}${working}`;
+  }
+  // Redraw only what changed: a message whose HTML is the same keeps its node, so images don't reload (and shift
+  // everything), reports don't replay their entrance, and a section you opened or closed stays that way.
+  function patch(box, html) {
+    const t = document.createElement("template");
+    t.innerHTML = html;
+    const fresh = [...t.content.children], old = [...box.children];
+    fresh.forEach((n, i) => {
+      const raw = n.outerHTML, o = old[i];
+      if (o && o._raw === raw) return;
+      n._raw = raw;
+      for (const d of $$("details[data-fold]", n)) if (state.folds.has(d.dataset.fold)) d.open = state.folds.get(d.dataset.fold);
+      if (o) o.replaceWith(n); else box.append(n);
+      enhance(n);
+    });
+    for (const o of old.slice(fresh.length)) o.remove();
   }
   let liveFrame = 0;
   function onDelta(d) {
@@ -759,11 +786,11 @@ async function viewChat(root, initialId) {
     liveFrame = requestAnimationFrame(() => {
       liveFrame = 0;
       const scroll = $("#scroll", root);
-      const near = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 160;
+      const near = state.pinned;
       let missing = false;
       for (const [key, v] of Object.entries(state.live)) {
         const el = root.querySelector(`[data-live="${CSS.escape(key)}"]`);
-        if (el) el.innerHTML = liveHtml(v, el.dataset.who); else missing = true;
+        if (el) { el.innerHTML = liveHtml(v, el.dataset.who); const t = el.querySelector(".thinking.live .md"); if (t) t.scrollTop = t.scrollHeight; } else missing = true;
       }
       if (missing) return renderMsgs();
       if (near) scroll.scrollTop = scroll.scrollHeight;
@@ -808,7 +835,7 @@ async function viewChat(root, initialId) {
     const error = r.events.findLast((e) => e.type === "error");
     const limit = r.events.find((e) => e.type === "runtime" && e.ev.raw?.type === "limit");
     if (!answer && !steps && !r.live && !error) return null;
-    let body = `${thoughts.length && !r.live ? thinkingHtml(thoughts.join("\n\n"), false) : ""}${steps}`;
+    let body = `${thoughts.length && !r.live ? thinkingHtml(thoughts.join("\n\n"), false) : ""}${steps}`.replace(/<details class="(steps|thinking)([^"]*)"/g, `<details data-fold="${esc(r.key)}:$1" class="$1$2"`);
     if (limit && !r.live) body += `<div class="small faint" style="margin:4px 0">Stopped at the limit (${esc(limit.ev.raw.over)}) and wrote up what it had.</div>`;
     // When did this run last show a sign of life, and which brain is it waiting for? (A free model can take minutes.)
     const lastAt = r.events.length ? toDate(r.events.at(-1).created_at)?.getTime() ?? Date.now() : Date.now();
@@ -830,7 +857,7 @@ async function viewChat(root, initialId) {
   function renderMsgs(forceBottom = false) {
     const s = state.session, scroll = $("#scroll", root), box = $("#msgs", root);
     if (!s || !box) return;
-    const nearBottom = forceBottom || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 140;
+    const nearBottom = forceBottom || state.pinned;
     const st = chatStats(s), compacts = [...st.compacts];
     const shown = (m) => !m.archived || state.showArch.has(m.archived);
     const sv = { ...s, messages: s.messages.filter(shown) };
@@ -887,8 +914,7 @@ async function viewChat(root, initialId) {
         <pre>${esc(ap.call.args?.command ?? JSON.stringify(ap.call.args, null, 2))}</pre>
         <div class="row"><button class="btn primary sm" data-grant="1">Allow</button><button class="btn sm" data-grant="1" data-always="1" title="Don't ask again for ${esc(prettyTool(ap.call.name))} in this chat${ap.call.name === "shell_run" ? ". Careful: commands run inside los's container, where they can read los's data and logins." : ""}">Allow for this chat</button><button class="btn sm" data-grant="0">Deny</button></div>
       </div>`;
-    box.innerHTML = html;
-    enhance(box);
+    patch(box, html);
     $$("[data-approval]", box).forEach((el) => $$("[data-grant]", el).forEach((b) => (b.onclick = async () => {
       try { await api(`/api/approvals/${el.dataset.approval}`, { method: "POST", body: { granted: b.dataset.grant === "1", always: b.dataset.always === "1" } }); el.remove(); } catch (err) { fail(err); }
     })));
@@ -910,7 +936,7 @@ async function viewChat(root, initialId) {
     }));
     $$("[data-more]", box).forEach((b) => (b.onclick = () => { b.closest(".report").classList.add("open"); b.remove(); }));
     $$(".welcome .suggestion", box).forEach((b) => (b.onclick = () => { const ta = $("#composer textarea", root); ta.value = b.textContent; ta.dispatchEvent(new Event("input")); ta.focus(); }));
-    if (nearBottom) scroll.scrollTop = scroll.scrollHeight;
+    if (nearBottom) { scroll.scrollTop = scroll.scrollHeight; state.pinned = true; }
     if (s.id) markSeen(s.id, s.messages.at(-1)?.created_at);
     clearInterval(state.tick);
     if (s.working?.length) {
@@ -1208,9 +1234,12 @@ function stepsHtml(events, live) {
     }
   }
   if (!rows.length) return "";
+  // While it works, only the latest few steps are shown open; the whole list is one tap away (Inspect has all of it).
+  const LIVE_ROWS = 3;
+  if (live && rows.length > LIVE_ROWS) rows.splice(0, rows.length - LIVE_ROWS, `<div class="step earlier small faint">earlier steps hidden while working · all of them in Inspect</div>`);
   const names = [...new Set(events.filter((e) => e.type === "tool_call").map((e) => prettyTool(e.ev.call.name)))];
   const label = calls ? `${plural(calls, "step")}${failed ? ` · <span class="bad-txt">${failed} failed</span>` : ""}<span class="faint ellipsis"> · ${esc(names.slice(0, 4).join(", "))}${names.length > 4 ? "…" : ""}</span>` : "notes";
-  return `<details class="steps" ${live ? "open" : ""}><summary>${live ? `<span class="spinner" style="width:11px;height:11px"></span>` : ""}${label}</summary>${rows.join("")}</details>`;
+  return `<details class="steps${live ? " live" : ""}" ${live ? "open" : ""}><summary>${live ? `<span class="spinner" style="width:11px;height:11px"></span>` : ""}<span class="steps-lbl">${label}</span></summary>${rows.join("")}</details>`;
 }
 const prettyTool = (n) => n.startsWith("mcp__") ? n.slice(5).replace("__", " · ") : n;
 // Bypass: tools that need your OK run without asking (per chat, per task, per job). Always confirmed with this warning.

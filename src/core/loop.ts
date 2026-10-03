@@ -36,6 +36,7 @@ export type Delta = { sessionId: string; turn: number; agent: string; brain: str
 // A brain that can't take this turn at all (limit hit, logged out, overloaded, silent): the agent's fallback brain, if
 // it has one, takes the turn. Otherwise the run ends with the error (and you can retry).
 const STALL_MS = 5 * 60_000;
+const TOOL_GRACE = 2 * 60_000; // how far past the time limit a hung tool call is waited for
 const UNAVAILABLE = /rate.?limit|usage limit|limit (reached|exceeded)|quota|overloaded|\b429\b|\b529\b|\b403\b|credit balance|not logged in|log ?in again|unreachable|free tier|can only be used from|exited \d+|ended without an answer/i;
 
 export async function runAgent(app: App, o: RunOptions): Promise<string> {
@@ -82,7 +83,17 @@ export async function runAgent(app: App, o: RunOptions): Promise<string> {
   const watchdog = () => {
     if (brain.session && !stalled && !killed && !approving && !inTools && !stopped() && Date.now() - lastSign > stallMs()) { stalled = true; brain.close?.(); }
   };
-  const clock = setInterval(() => { cutOff(); watchdog(); }, 5000);
+  // A tool that never returns (a wedged page in the browser, a hung request) is abandoned when you press Stop, or
+  // TOOL_GRACE after the time limit; the agent then gets an error for it and writes up. Approval waits don't count.
+  let abandon: ((r: { content: string }) => void) | null = null;
+  const giveUp = (content: string) => { const a = abandon; abandon = null; if (a) { emit({ type: "runtime", brain: brain.id, raw: { type: "abandoned", content } }); a({ content }); } };
+  const toolWatch = () => {
+    if (!abandon || approving) return;
+    if (stopped()) giveUp("The run was stopped during this call.");
+    else if (Date.now() >= deadline + TOOL_GRACE) giveUp(`Error: this call didn't finish within the time limit (${o.agent.maxMinutes} minutes) and was abandoned.`);
+  };
+  o.signal?.addEventListener("abort", toolWatch);
+  const clock = setInterval(() => { cutOff(); watchdog(); toolWatch(); }, 5000);
   const emit = (e: AgentEvent) => {
     sign();
     log(e);
@@ -242,10 +253,14 @@ export async function runAgent(app: App, o: RunOptions): Promise<string> {
       for (const call of res.toolCalls) {
         const { content } = stopped()
           ? { content: "The run was stopped before this call." }
-          : await callTool(app, ctx, call, {
-              visible: (n) => active.has(n), approve, emit,
-              notVisible: brain.session ? `Tool "${call.name}" is not available.` : `Tool "${call.name}" is not loaded. Use tool_search to find and load it.`,
-            });
+          : await Promise.race([
+              callTool(app, ctx, call, {
+                visible: (n) => active.has(n), approve, emit,
+                notVisible: brain.session ? `Tool "${call.name}" is not available.` : `Tool "${call.name}" is not loaded. Use tool_search to find and load it.`,
+              }),
+              new Promise<{ content: string }>((r) => { abandon = r; }),
+            ]);
+        abandon = null;
         results.push(content);
       }
       inTools = false;
@@ -267,6 +282,7 @@ export async function runAgent(app: App, o: RunOptions): Promise<string> {
   } finally {
     clearInterval(clock);
     o.signal?.removeEventListener("abort", onAbort);
+    o.signal?.removeEventListener("abort", toolWatch);
     brain.close?.();
   }
 }

@@ -176,6 +176,12 @@ export async function screenshot(settings: Settings, browserUrl: string, url: st
   });
 }
 
+const CALL_MS = 30_000;
+const withTimeout = <T>(p: Promise<T>, ms: number, why: string) => {
+  let timer: NodeJS.Timeout;
+  return Promise.race([p, new Promise<never>((_, j) => { timer = setTimeout(() => j(new Error(why)), ms); })]).finally(() => clearTimeout(timer));
+};
+
 /** Open `url` in a fresh tab of the headless Chrome, wait for it to load, run `fn` with a DevTools `send`, close the tab. */
 async function inBrowser<T>(browserUrl: string, url: string, o: { viewport?: { width: number; height: number; mobile: boolean }; ua?: string },
   fn: (send: (method: string, params?: object) => Promise<any>) => Promise<T>): Promise<T> {
@@ -186,28 +192,36 @@ async function inBrowser<T>(browserUrl: string, url: string, o: { viewport?: { w
   const target = await (await fetch(`${base}/json/new?about:blank`, { method: "PUT", signal: AbortSignal.timeout(10_000) })).json() as any;
   const ws = new WebSocket(target.webSocketDebuggerUrl.replace(/\/\/[^/]+/, `//${u.host}`));
   let id = 0;
-  const waiting = new Map<number, (r: any) => void>();
   let loaded: () => void = () => {};
   const onLoad = new Promise<void>((r) => (loaded = r));
+  const waiting = new Map<number, { resolve: (r: any) => void; reject: (e: Error) => void }>();
   ws.onmessage = (m) => {
     const msg = JSON.parse(String(m.data));
-    if (msg.id && waiting.has(msg.id)) { waiting.get(msg.id)!(msg); waiting.delete(msg.id); }
+    if (msg.id && waiting.has(msg.id)) { waiting.get(msg.id)!.resolve(msg); waiting.delete(msg.id); }
     if (msg.method === "Page.loadEventFired") loaded();
   };
-  const send = (method: string, params: object = {}) => new Promise<any>((resolve) => {
-    waiting.set(++id, resolve);
-    ws.send(JSON.stringify({ id, method, params }));
+  // Every DevTools call has a time limit, and a dropped connection fails whatever is still waiting: a page that
+  // wedges the tab (or a browser that goes away) must not leave the agent waiting forever (it once hung 8 hours).
+  const gone = (why: string) => { for (const w of waiting.values()) w.reject(new Error(why)); waiting.clear(); };
+  ws.onclose = () => gone("the browser closed the connection");
+  const send = (method: string, params: object = {}) => new Promise<any>((resolve, reject) => {
+    const n = ++id;
+    const timer = setTimeout(() => { waiting.delete(n); reject(new Error(`the browser didn't answer ${method} within ${CALL_MS / 1000}s`)); }, CALL_MS);
+    waiting.set(n, { resolve: (r) => { clearTimeout(timer); resolve(r); }, reject: (e) => { clearTimeout(timer); reject(e); } });
+    ws.send(JSON.stringify({ id: n, method, params }));
   });
+  const opened = new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error("could not reach the browser")); });
   try {
-    await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error("could not reach the browser")); });
+    await withTimeout(opened, 10_000, "could not reach the browser (timed out)");
     await send("Network.setUserAgentOverride", { userAgent: o.ua ?? UA, acceptLanguage: HEADERS["accept-language"] });
     if (o.viewport) await send("Emulation.setDeviceMetricsOverride", { width: o.viewport.width, height: o.viewport.height, deviceScaleFactor: 1, mobile: o.viewport.mobile });
     await send("Page.enable");
     await send("Page.navigate", { url });
     await Promise.race([onLoad, new Promise((r) => setTimeout(r, 25_000))]);
     await new Promise((r) => setTimeout(r, 1500)); // let late scripts fill the page in
-    return await fn(send);
+    return await withTimeout(fn(send), 90_000, "the browser took too long with this page");
   } finally {
+    gone("done");
     ws.close();
     fetch(`${base}/json/close/${target.id}`).catch(() => {});
   }

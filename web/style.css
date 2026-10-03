@@ -1012,3 +1012,42 @@ label.foot-btn { cursor: pointer; }
 .ctx-menu button[disabled] { color: var(--faint); cursor: default; }
 .ctx-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 .kcard { -webkit-user-drag: element; user-select: none; }
+
+/* ── chat on a phone ── */
+.step.earlier { display: block; padding-left: 36px; }
+@media (max-width: 860px) {
+  /* The chat head is the bar on a phone: no second bar above it (the chat list's ☰ opens the menu). */
+  body[data-view="chat"] .shell { grid-template-rows: 1fr; }
+  body[data-view="chat"] .topbar { display: none; }
+  .room { height: 100%; }
+  .room-head { min-height: 52px; gap: 8px; }
+  .room-head .faces { display: none; }
+  .room-scroll { padding-top: 10px; overscroll-behavior: contain; }
+  .msgs { padding: 0 4px; }
+  .msg { grid-template-columns: 28px minmax(0, 1fr); gap: 2px 8px; padding: 6px 6px 3px; }
+  .msg:hover { background: none; }
+  .msg-face .face { width: 28px !important; height: 28px !important; font-size: 13px !important; }
+  .msg-head { flex-wrap: wrap; row-gap: 0; }
+  .msg-imgs img { max-width: 46vw; height: 140px; max-height: none; }
+  .step { padding: 6px 10px; }
+  .step .args { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .step .res { max-height: 64px; }
+  .report { padding: 10px 12px; }
+  .report-head { flex-wrap: wrap; font-size: 12.5px; }
+  .report-head .grow { flex-basis: calc(100% - 40px); }
+  .composer { padding: 6px 8px calc(8px + env(safe-area-inset-bottom)); }
+  /* iOS zooms into any field under 16px when it gets focus, and the page then jumps around. */
+  .composer-box textarea, .msg-editing textarea, .side-search input { font-size: 16px; }
+  .working { flex-wrap: wrap; }
+}
+.steps-lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thinking.live .md { max-height: 120px; }
+@media (max-width: 860px) {
+  /* While an agent works, its block stays about the same height: the latest step only, no result previews, and
+     the thinking as a small window that follows the newest line. */
+  .steps.live .step:not(:last-child):not(.earlier) { display: none; }
+  .steps.live .step .res { display: none; }
+  .steps.live .step.earlier { padding-top: 4px; padding-bottom: 4px; }
+  .thinking.live .md { max-height: 66px; }
+  .working { font-size: 12.5px; gap: 8px; }
+}
