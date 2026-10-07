@@ -47,7 +47,7 @@ docker exec -it los node_modules/.bin/tsx src/cli/chat.ts   # terminal chat, sam
   each with its own env vars (`data/brain-env.json`, 0600) and, for runtimes, its own login under `data/accounts/<name>`.
   So two Claude accounts can run side by side. Logins (Claude: URL + code, Codex: device code) run from the browser,
   logins are re-checked every 15 min, and Claude/Codex plan limits plus los's own token counts are shown per brain.
-- **Persistent:** `data/` (SQLite db, the shared workspace, logins) and `config/` (editable from the UI) are bind mounts.
+- **Persistent:** `data/` (SQLite db, the shared workspace, logins) and `config/` (editable from the UI; not in git, filled from `config.example/` on first start) are bind mounts.
 - **Not available here yet:** no Ollama, so Vera, enrichment and embeddings are off (search is keyword-only).
   Point the `local` brain at an Ollama server to turn them on.
 

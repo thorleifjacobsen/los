@@ -27,7 +27,9 @@ Read `README.md` for the original design ("the five ideas") and `src/types.ts` f
   A restart stops chat runs: on shutdown each is stopped with "Interrupted: los was restarted" and listed in
   `data/interrupted.json`; on start, ones younger than 15 min resume (same turn). Still, check nothing is running
   first (an open `request` without a later `usage`/`error` for the same session+turn+agent, or `/api/overview`).
-  Source is baked into the image. Only `data/` and `config/` are bind mounts. DB backups before big changes go in
+  Source is baked into the image. Only `data/` and `config/` are bind mounts. `config/` is this installation's own
+  setup and is **not in git** (`.gitignore`, 2026-10-07): don't commit agent/brain changes. The shipped defaults are
+  `config.example/`; `seedConfig()` in config.ts copies whatever is missing on start, never overwriting. DB backups before big changes go in
   `data/backups/` (`sqlite3 data/los.db ".backup data/backups/<name>.db"`).
 - **Logs:** `docker logs -f los`.
 - **Healthcheck:** `GET /api/health` is public. Everything else needs a session.
@@ -432,7 +434,7 @@ Event types beyond the obvious: `reasoning`, `context`, `compact`, `usage`, `run
 
 - `npm run typecheck` on the host.
 - The smoke test needs `pdftotext`, which the host doesn't have, so run it in the image:
-  `docker run --rm -v $PWD/config:/app/config:ro --entrypoint node_modules/.bin/tsx los test/smoke.ts`.
+  `docker run --rm -v $PWD/config.example:/app/config:ro --entrypoint node_modules/.bin/tsx los test/smoke.ts`.
 - **API with curl:** the cookie is `Secure`, so curl won't send it over plain http from a jar. Log in with
   `curl -D - -X POST localhost:7001/login --data-urlencode username=toffe --data-urlencode password=…`,
   then pass `-H "Cookie: los_session=…"` (and `-H "X-Los: 1"` for writes).

@@ -21,6 +21,7 @@ COPY package.json package-lock.json ./
 COPY src ./src
 COPY web ./web
 COPY test ./test
+COPY config.example ./config.example
 RUN mkdir -p /app/data /app/config && chown -R node:node /app
 
 USER node

@@ -33,8 +33,9 @@ cd /var/www && tar --exclude=los/node_modules -czf los.tgz los
 mkdir -p ~/apps && tar -xzf los.tgz -C ~/apps && cd ~/apps/los
 ```
 
-For a fresh install (no old data), leave out `data/` and keep `config/`: it has the brains, the agents
-(`config/agents/*.md`: Los, Mira, Finn, Vera) and the MCP servers.
+For a fresh install (no old data), leave out `data/` and `config/`. On first start los fills `config/` from the
+shipped defaults in `config.example/` (the brains, the agents `config/agents/*.md` and the MCP servers). `config/` is
+this installation's own setup (edited from the UI) and isn't in git; existing files are never overwritten.
 
 ## 2. (Nothing to do here any more)
 
@@ -76,7 +77,7 @@ docker compose --profile browser up -d browser   # optional: headless Chrome for
 
 Check: `curl -s localhost:7001/api/health` prints `ok`. Logs: `docker logs -f los`.
 
-`config/settings.yaml` should point at the two services (it does in the shipped config):
+`config/settings.yaml` should point at the two services (it does in the shipped defaults):
 
 ```yaml
 web:
@@ -142,7 +143,7 @@ enough; nothing has to be reachable from the internet.
 - Open los, start a chat: Los should answer.
 - Ask `@mira what does a Raspberry Pi 5 cost at komplett.no?`: she should search (SearXNG), read the shop page
   and give a price. Open **Inspect** under her answer to see every call and result.
-- Smoke test (no real brains needed): `docker run --rm -v $PWD/config:/app/config:ro --entrypoint node_modules/.bin/tsx los test/smoke.ts`
+- Smoke test (no real brains needed): `docker run --rm -v $PWD/config.example:/app/config:ro --entrypoint node_modules/.bin/tsx los test/smoke.ts`
 
 ## Moving from the old server
 
@@ -169,6 +170,7 @@ so they survive. Before a big change, back up the database:
 | `config/settings.yaml` | brains, timezone, web search/browser, privacy |
 | `config/agents/<name>.md` | one agent each: `brain`, optional `emoji`, and the personality |
 | `config/mcp.json` | external MCP servers |
+| `config.example/` | the shipped defaults `config/` is filled from on first start (in git; `config/` isn't) |
 | `services/searxng/settings.yml` | SearXNG config (JSON API on, limiter off) |
 | `data/los.db` | everything said and done (SQLite) |
 | `data/workspace/` | files you and the agents share |

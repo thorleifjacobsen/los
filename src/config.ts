@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, cpSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { parse, stringify } from "yaml";
@@ -49,7 +49,22 @@ export type McpServerConfig = {
   privacy?: "public" | "local-only";
 };
 
+/**
+ * config/ belongs to the installation (brains, agents, MCP servers: edited from the UI), not to the code, so it isn't
+ * in git. A fresh install starts from the shipped defaults in config.example/: whatever is missing is copied over
+ * (settings.yaml, mcp.json, and the agents when there are none). Nothing that exists is ever overwritten.
+ */
+export function seedConfig(root: string) {
+  const from = join(root, "config.example"), to = join(root, "config");
+  if (!existsSync(from)) return;
+  mkdirSync(to, { recursive: true });
+  for (const f of ["settings.yaml", "mcp.json"]) if (!existsSync(join(to, f))) cpSync(join(from, f), join(to, f));
+  const agents = join(to, "agents");
+  if (!existsSync(agents) || !readdirSync(agents).some((f) => f.endsWith(".md"))) cpSync(join(from, "agents"), agents, { recursive: true });
+}
+
 export function loadSettings(root = process.env.LOS_ROOT ?? process.cwd()): Settings {
+  seedConfig(root);
   const raw = parse(readFileSync(join(root, "config/settings.yaml"), "utf8"));
   const mcpPath = join(root, "config/mcp.json");
   return {

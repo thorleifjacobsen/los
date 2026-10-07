@@ -97,6 +97,6 @@ routing:
     agent: mira
 
 web:
-  files_url: https://los-files.tjlabs.no   # workspace pages on their own origin (localStorage works); unset → sandboxed on los's address
+  # files_url: https://los-files.example.com   # workspace pages on their own origin (localStorage works); unset → sandboxed on los's address
   searxng_url: http://searxng:8080     # the searxng service in docker-compose.yml (unset → DuckDuckGo's HTML page)
   browser_url: http://browser:9222     # optional headless Chrome for JavaScript pages (compose profile "browser"); unset → no fallback

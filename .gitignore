@@ -3,3 +3,5 @@ data/
 *.db*
 .env
 .claude/
+# the installation's own setup (brains, agents, MCP servers); defaults ship in config.example/
+config/
