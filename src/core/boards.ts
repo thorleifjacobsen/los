@@ -3,12 +3,14 @@
 // background task, when it has time (queueCards, called by the scheduler). When that task ends and the agent left
 // the card with itself, the card comes back to you with the result as a comment (afterCardTask). Agents can hand a
 // card to you (they need your decision) or to a teammate; agent-to-agent passes are capped (MAX_PASSES) until you
-// touch the card again. Everything that happens to a card is in card_events, which is also what agents see of your
-// decisions. The tables are created by the boards plugin (src/plugins/boards).
+// touch the card again. A comment of yours that @mentions teammates (or @team) gives each of them a task on the card
+// right away (askFromComment); a comment without a mention is just a note. Everything that happens to a card is in
+// card_events, which is also what agents see of your decisions. The tables are created by the boards plugin (src/plugins/boards).
 import type { App } from "../app.js";
 import type { DB } from "../db/index.js";
 import { bus } from "./events.js";
 import { createTask } from "../tasks/queue.js";
+import { mentions } from "./session.js";
 
 export const ME = "me";
 export const MAX_PASSES = 5; // agent → agent hand-offs of one card before it has to come back to you
@@ -199,7 +201,8 @@ export function updateCard(app: App, id: number, p: CardPatch, by: string) {
   }
   if (sets.some((s) => /^(title|body|link|image|tags|priority) /.test(s))) logCard(db, id, by, "updated", null, Object.fromEntries(
     Object.entries(p).filter(([k]) => ["title", "link", "image", "tags", "priority"].includes(k))));
-  if (comment) logCard(db, id, by, "comment", comment);
+  const asked = user && comment ? askFromComment(app, c, b, comment) : undefined;
+  if (comment) logCard(db, id, by, "comment", comment, asked);
   if (sets.length) db.prepare(`UPDATE cards SET ${sets.join(", ")}, updated_at = datetime('now') WHERE id = ?`).run(...vals, id);
   else if (comment) db.prepare("UPDATE cards SET updated_at = datetime('now') WHERE id = ?").run(id);
   ui({ boardId: b.id, cardId: id });
@@ -226,6 +229,31 @@ export function cardText(app: App, c: CardRow, b: BoardRow, history = 15) {
   return [`Card #${c.id} on board "${b.name}" (#${b.id}), column "${c.col}", assigned to ${who(app, c.assignee)}${c.priority ? `, priority ${["normal", "high", "urgent"][c.priority]}` : ""}`,
     `Title: ${c.title}`, c.link && `Link: ${c.link}`, c.image && `Image: ${c.image}`, JSON.parse(c.tags).length ? `Tags: ${JSON.parse(c.tags).join(", ")}` : "",
     c.body && `\n${c.body}`, evs.length ? `\nHistory:\n${evs.join("\n")}` : ""].filter(Boolean).join("\n");
+}
+
+/**
+ * Your comment @mentions teammates: each gets a task on the card now (not through the queue), with the card and your
+ * comment. Its final answer goes on the card as its reply (afterCardTask). Returns who was asked and their tasks
+ * (kept on the comment, so afterCardTask knows these were questions, not the card's own work).
+ */
+function askFromComment(app: App, c: CardRow, b: BoardRow, comment: string) {
+  const agents = Object.values(app.settings.agents);
+  const m = mentions(comment, agents);
+  const asked = m.team ? agents.map((a) => a.name) : m.handles;
+  if (!asked.length) return undefined;
+  const tasks: number[] = [];
+  for (const h of asked) {
+    const busy = app.db.prepare("SELECT 1 FROM tasks WHERE card_id = ? AND agent = ? AND status IN ('queued', 'running', 'waiting')").get(c.id, h);
+    tasks.push(createTask(app.db, {
+      title: `Card #${c.id}: ${comment.replace(/\s+/g, " ")}`.slice(0, 120), agent: h, cardId: c.id, bypass: !!(b.bypass || c.bypass), reportTo: b.report_to ?? undefined,
+      prompt: `${cardText(app, c, b)}\n\n---\nThe user mentioned you in a comment on this card:\n\n${comment}\n\n` +
+        `Do what they ask${busy ? " (you also have other work open on this card; this is about the comment)" : ""}. ` +
+        `Your final answer is posted on the card as your reply, so write it to them: the answer itself, with links to anything you made. ` +
+        `Don't also add it as a comment. Change the card (cards_update) only if they ask or it clearly follows from the answer.`,
+    }));
+  }
+  bus.emit("ui", { kind: "tasks" });
+  return { asked, tasks };
 }
 
 /** The agent queue: each agent with cards assigned to it gets one task at a time, most urgent then oldest card first. */
@@ -266,7 +294,9 @@ export function afterCardTask(app: App, t: { id: number; card_id: number | null;
   const result = (t.result ?? "").trim();
   logCard(db, c.id, t.agent, "result", ok ? result || "(no result)" : `Task #${t.id} ${t.status}${result && t.status !== "cancelled" ? `: ${result.slice(0, 2000)}` : ""}`, { task: t.id, status: t.status });
   const b = getBoard(db, c.board_id);
-  if (c.assignee === t.agent && !doneCols(b).includes(c.col)) {
+  // A reply to your comment leaves the card where it is: if it's in the agent's queue, the card's own work still comes.
+  const reply = db.prepare(`SELECT 1 FROM card_events e, json_each(e.data, '$.tasks') j WHERE e.card_id = ? AND e.type = 'comment' AND j.value = ?`).get(c.id, t.id);
+  if (!reply && c.assignee === t.agent && !doneCols(b).includes(c.col)) {
     db.prepare("UPDATE cards SET assignee = 'me', updated_at = datetime('now') WHERE id = ?").run(c.id);
     logCard(db, c.id, t.agent, "assigned", ok ? "Done: back to you for review." : "Didn't finish: back to you.", { from: t.agent, to: ME });
   }

@@ -117,16 +117,75 @@ function codeEditor(ta) {
   });
 }
 
+// @mention autocomplete for a textarea: typing @ lists the team (face, name, what they do, working or not) plus
+// @team; arrows + Enter/Tab pick, Escape closes. `box` is the positioned element the menu hangs from (above it, or
+// below with { below: true }). Register this before the field's own keydown, which checks picker.open() first.
+function mentionPicker(ta, box, { below = false, team: withTeam = true } = {}) {
+  let menu = null, pick = 0;
+  const close = () => { menu?.remove(); menu = null; };
+  const word = () => /(?:^|[\s(,;:])@([\p{L}\p{N}_-]*)$/u.exec(ta.value.slice(0, ta.selectionStart));
+  const status = (a) => a.status?.state === "working" ? `<span class="mm-st">working</span>` : a.status?.state === "away" ? `<span class="mm-st faint">away</span>` : "";
+  const show = () => {
+    const m = word();
+    if (!m) return close();
+    const q = m[1].toLowerCase();
+    const list = [...team.agents.filter((a) => !q || a.handle.startsWith(q) || a.name.toLowerCase().startsWith(q)).map((a) => ({ handle: a.handle,
+        html: `${face(a.handle, 26, a.status?.state)}<span class="mm-txt"><span><b>${esc(a.name)}</b> <span class="faint">@${esc(a.handle)}</span>${status(a)}</span><span class="muted small">${esc(a.title)}</span></span>` })),
+      ...(withTeam && (!q || "team".startsWith(q)) ? [{ handle: "team", html: `${faces(team.agents.map((a) => a.handle), 18, 4)}<span class="mm-txt"><b>team</b><span class="muted small">everyone answers once, from their role</span></span>` }] : [])];
+    if (!list.length) return close();
+    pick = Math.min(pick, list.length - 1);
+    menu?.remove();
+    menu = h(`<div class="mention-menu ${below ? "below" : ""}">${list.map((x, i) => `<button type="button" class="mm-item ${i === pick ? "on" : ""}" data-h="${esc(x.handle)}">${x.html}</button>`).join("")}</div>`);
+    box.append(menu);
+    $$(".mm-item", menu).forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); insert(b.dataset.h); }));
+  };
+  const insert = (handle) => {
+    const m = word(), at = ta.selectionStart, start = at - (m ? m[1].length + 1 : 0);
+    ta.value = ta.value.slice(0, start) + `@${handle} ` + ta.value.slice(at);
+    ta.selectionStart = ta.selectionEnd = start + handle.length + 2;
+    ta.dispatchEvent(new Event("input"));
+    close();
+    ta.focus();
+  };
+  ta.addEventListener("input", () => { pick = 0; show(); });
+  ta.addEventListener("blur", () => setTimeout(close, 150));
+  ta.addEventListener("keydown", (e) => {
+    if (!menu) return;
+    const items = $$(".mm-item", menu);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); pick = (pick + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length; items.forEach((b, i) => b.classList.toggle("on", i === pick)); }
+    else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); insert(items[pick].dataset.h); e.stopImmediatePropagation(); }
+    else if (e.key === "Escape") { close(); e.stopPropagation(); }
+  });
+  return { open: () => !!menu, close };
+}
+
 // ── drawer ───────────────────────────────────────────────────────────────
-function openDrawer(html, { onClose, wide } = {}) {
-  const root = $("#drawer-root");
+// With `key`, opening the same drawer again (a refresh) swaps its content in place: no fade-in, scroll kept.
+function openDrawer(html, { onClose, wide, key } = {}) {
+  const root = $("#drawer-root"), open = $(".drawer", root);
+  if (key && open && open.dataset.key === key && root._close) {
+    const top = $(".drawer-body", open)?.scrollTop ?? 0;
+    open.innerHTML = html;
+    const body = $(".drawer-body", open);
+    if (body) body.scrollTop = top;
+    $$("[data-close]", open).forEach((b) => (b.onclick = root._close));
+    return { el: open, close: root._close, refreshed: true };
+  }
+  root._close?.(true);
   root.innerHTML = "";
   const scrim = h(`<div class="scrim"></div>`);
   const drawer = h(`<aside class="drawer ${wide ? "wide" : ""}" role="dialog" aria-modal="true">${html}</aside>`);
-  const close = () => { root.innerHTML = ""; document.removeEventListener("keydown", onKey); onClose?.(); };
+  if (key) drawer.dataset.key = key;
+  const close = (replaced) => {
+    if (root._close !== close) return;
+    root._close = null;
+    if (replaced !== true) root.innerHTML = "";
+    document.removeEventListener("keydown", onKey); onClose?.();
+  };
   const onKey = (e) => e.key === "Escape" && close();
   scrim.onclick = close;
   document.addEventListener("keydown", onKey);
+  root._close = close;
   root.append(scrim, drawer);
   $$("[data-close]", drawer).forEach((b) => (b.onclick = close));
   return { el: drawer, close };
@@ -628,39 +687,9 @@ async function viewChat(root, initialId) {
     const form = $("#composer", root), ta = $("textarea", form);
     autosize(ta);
     ta.focus();
-    let menu = null, pick = 0;
-    const close = () => { menu?.remove(); menu = null; };
-    const word = () => /(?:^|\s)@([\p{L}\p{N}_-]*)$/u.exec(ta.value.slice(0, ta.selectionStart));
-    const show = () => {
-      const m = word();
-      if (!m) return close();
-      const q = m[1].toLowerCase();
-      const list = [...team.agents.filter((a) => !q || a.handle.startsWith(q) || a.name.toLowerCase().startsWith(q)).map((a) => ({ handle: a.handle, html: `${face(a.handle, 24, a.status.state)}<b>${esc(a.name)}</b><span class="muted small">${esc(a.title)}</span>` })),
-        ...(!q || "team".startsWith(q) ? [{ handle: "team", html: `${faces(team.agents.map((a) => a.handle), 18, 4)}<b>team</b><span class="muted small">everyone answers once, from their role</span>` }] : [])];
-      if (!list.length) return close();
-      pick = Math.min(pick, list.length - 1);
-      menu?.remove();
-      menu = h(`<div class="mention-menu">${list.map((x, i) => `<button type="button" class="mm-item ${i === pick ? "on" : ""}" data-h="${esc(x.handle)}">${x.html}</button>`).join("")}</div>`);
-      form.querySelector(".composer-box").append(menu);
-      $$(".mm-item", menu).forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); insert(b.dataset.h); }));
-    };
-    const insert = (handle) => {
-      const m = word(), at = ta.selectionStart, start = at - (m ? m[1].length + 1 : 0);
-      ta.value = ta.value.slice(0, start) + `@${handle} ` + ta.value.slice(at);
-      ta.selectionStart = ta.selectionEnd = start + handle.length + 2;
-      ta.dispatchEvent(new Event("input"));
-      close();
-      ta.focus();
-    };
-    ta.addEventListener("input", () => { pick = 0; show(); });
-    ta.addEventListener("blur", () => setTimeout(close, 150));
+    const picker = mentionPicker(ta, form.querySelector(".composer-box"));
     ta.addEventListener("keydown", (e) => {
-      if (menu) {
-        const items = $$(".mm-item", menu);
-        if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); pick = (pick + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length; items.forEach((b, i) => b.classList.toggle("on", i === pick)); return; }
-        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); return insert(items[pick].dataset.h); }
-        if (e.key === "Escape") return close();
-      }
+      if (picker.open()) return;
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
     });
     // Files: saved in this chat's own folder (a new chat is created for the first one), put in the message as links the
@@ -698,7 +727,7 @@ async function viewChat(root, initialId) {
     room.ondragover = (e) => { if ([...(e.dataTransfer?.types ?? [])].includes("Files")) { e.preventDefault(); room.classList.add("dropping"); } };
     room.ondragleave = (e) => { if (!room.contains(e.relatedTarget)) room.classList.remove("dropping"); };
     room.ondrop = (e) => { if (!e.dataTransfer?.files?.length) return; e.preventDefault(); room.classList.remove("dropping"); attach(e.dataTransfer.files); };
-    $("#at-btn", form).onclick = () => { const pre = ta.value && !/\s$/.test(ta.value) ? " @" : "@"; ta.value += pre; ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; show(); };
+    $("#at-btn", form).onclick = () => { const pre = ta.value && !/\s$/.test(ta.value) ? " @" : "@"; ta.value += pre; ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; ta.dispatchEvent(new Event("input")); };
     form.onsubmit = async (e) => {
       e.preventDefault();
       const s = state.session;
@@ -2092,8 +2121,11 @@ async function viewBoards(root, id) {
 
   async function load() {
     if (state.id) {
-      try { state.board = await api(`/api/boards/${state.id}`); } catch (e) { fail(e); return navigate("/boards", { replace: true }); }
-      drawBoard();
+      let nb;
+      try { nb = await api(`/api/boards/${state.id}`); } catch (e) { fail(e); return navigate("/boards", { replace: true }); }
+      const same = state.board && JSON.stringify(nb) === JSON.stringify(state.board) && $(".kanban", root);
+      state.board = nb;
+      if (!same) drawBoard();
     } else {
       const r = await api("/api/boards");
       state.boards = r.boards; state.needsYou = r.needsYou;
@@ -2115,7 +2147,15 @@ async function viewBoards(root, id) {
     $("#new-board", root).onclick = () => boardDrawer(null);
   }
 
+  // A redraw keeps where you were: the board's sideways scroll and each column's own.
   function drawBoard() {
+    const strip0 = $(".kanban", root), keep = strip0 ? { x: strip0.scrollLeft, cols: Object.fromEntries($$(".kcol", root).map((c) => [c.dataset.col, $(".kcards", c).scrollTop])) } : null;
+    drawBoardNow();
+    if (!keep) return;
+    $(".kanban", root).scrollLeft = keep.x;
+    $$(".kcol", root).forEach((c) => { if (keep.cols[c.dataset.col]) $(".kcards", c).scrollTop = keep.cols[c.dataset.col]; });
+  }
+  function drawBoardNow() {
     const b = state.board, q = state.q.trim().toLowerCase();
     const shown = b.cards.filter((c) => (!state.mine || c.assignee === "me") &&
       (!q || `${c.title} ${c.body ?? ""} ${c.key ?? ""} ${c.link ?? ""} ${c.tags.join(" ")} ${whoName(c.assignee)}`.toLowerCase().includes(q)));
@@ -2220,22 +2260,33 @@ async function viewBoards(root, id) {
     menu.querySelector("button:not([disabled])")?.focus();
   }
 
-  function evHtml(e) {
+  function evHtml(e, replies = new Set()) {
     const by = `<span class="who">${e.who === "me" ? "You" : esc(agentName(e.who))}</span>`, d = e.data ?? {};
     const body = e.type === "created" ? `${by} created it in ${esc(d.column)}${d.assignee ? ` for ${esc(whoName(d.assignee))}` : ""}`
       : e.type === "moved" ? `${by} moved it from ${esc(d.from)} to <b>${esc(d.to)}</b>`
       : e.type === "assigned" ? `${by} ${d.to === e.who ? "took it" : `assigned it to <b>${esc(whoName(d.to))}</b>`}${e.text ? `: ${esc(e.text)}` : ""}`
       : e.type === "updated" ? `${by} edited it`
-      : e.type === "result" ? `${by}'s result${d.task ? ` (<a href="/tasks/${d.task}">task #${d.task}</a>)` : ""}<div class="md">${md(e.text)}</div>`
-      : `${by}<div class="md">${md(e.text)}</div>`;
+      : e.type === "result" ? `${by}${replies.has(d.task) ? " replied" : "'s result"}${d.task ? ` (<a href="/tasks/${d.task}">task #${d.task}</a>)` : ""}<div class="md">${md(e.text)}</div>`
+      : `${by}${d.asked?.length ? ` <span class="faint">asked ${d.asked.map((h) => esc(agentName(h))).join(", ")}</span>` : ""}<div class="md">${md(e.text)}</div>`;
     return `<div class="card-ev ${e.type}">${e.who === "me" ? meFace(20) : face(e.who, 20)}<div class="grow" style="min-width:0">${body}<div class="small faint">${ago(e.created_at)}</div></div></div>`;
   }
 
-  async function cardDrawer(cid) {
+  // refresh: only redraw a drawer that's still open for this card (a poll or a live update), never reopen it.
+  async function cardDrawer(cid, refresh = false) {
+    const isOpen = () => !!$(`.drawer[data-key="card-${cid}"]`);
+    if (refresh && !isOpen()) return;
     let c;
-    try { c = await api(`/api/cards/${cid}`); } catch (e) { return fail(e); }
+    try { c = await api(`/api/cards/${cid}`); } catch (e) { return refresh ? undefined : fail(e); }
+    if (refresh && !isOpen()) return;
     state.openCard = cid;
-    const b = state.board, img = cardImage(c.image), task = c.tasks.find((t) => OPEN_TASK.includes(t.status));
+    const b = state.board, img = cardImage(c.image), open = c.tasks.filter((t) => OPEN_TASK.includes(t.status));
+    const replies = new Set(c.events.flatMap((e) => e.type === "comment" ? e.data?.tasks ?? [] : []));
+    // What's being kept across a refresh: a half-written comment (and focus), the Edit section open or not.
+    const prev = $(`.drawer[data-key="card-${cid}"]`);
+    const draft = prev ? { text: $("#c-comment textarea", prev)?.value ?? "", focused: document.activeElement === $("#c-comment textarea", prev), edit: !!$("#c-edit", prev)?.open } : null;
+    const working = open.map((t) => `<div class="card-ev working">${face(t.agent, 20)}<div class="grow" style="min-width:0">
+      ${t.status === "queued" ? `<span class="who">${esc(agentName(t.agent))}</span> starts in a moment` : t.status === "waiting" ? `<span class="who">${esc(agentName(t.agent))}</span> needs your OK to go on` : `<span class="spinner"></span><span class="who">${esc(agentName(t.agent))}</span> is working on ${replies.has(t.id) ? "your comment" : "it"}${t.doing ? ` <span class="faint">· ${esc(t.doing.replace(/_/g, " "))}</span>` : ""}`}
+      <div class="small faint">${t.status === "running" ? `started ${ago(t.updated_at)} · ` : ""}<a href="/tasks/${t.id}">${t.status === "waiting" ? "answer" : "follow along"} (task #${t.id})</a></div></div></div>`).join("");
     const d = openDrawer(`${drawerHead(`#${c.id} · ${esc(c.title)}`, `${esc(b.name)}${c.key ? ` · key <code>${esc(c.key)}</code>` : ""} · created ${c.created_by ? `by ${esc(whoName(c.created_by))} ` : ""}${ago(c.created_at)}`)}
       <div class="drawer-body">
         <div class="kgrid3">
@@ -2243,12 +2294,12 @@ async function viewBoards(root, id) {
           <label class="field">Assigned to<select class="input" id="c-who">${assigneeOptions(c.assignee)}</select></label>
           <label class="field">Priority<select class="input" id="c-prio">${PRIO.map((p, i) => `<option value="${i}" ${i === c.priority ? "selected" : ""}>${p}</option>`).join("")}</select></label>
         </div>
-        ${task ? `<div class="notice info"><span>⏳</span><div>${esc(agentName(task.agent))} is on it: <a href="/tasks/${task.id}">task #${task.id}</a> (${esc(task.status)}).</div></div>`
+        ${open.length ? ""
           : c.assignee && c.assignee !== "me" && !b.columns.find((x) => x.name === c.col)?.done ? `<div class="notice info"><span>🕑</span><div>In ${esc(agentName(c.assignee))}'s queue: they take it when they're free.</div></div>` : ""}
         ${c.link ? `<div><a href="${esc(c.link)}" target="_blank" rel="noopener noreferrer">${esc(c.link)}</a></div>` : ""}
         ${img ? `<a href="${esc(img)}" target="_blank" rel="noopener"><img class="card-img" src="${esc(img)}" alt=""></a>` : c.image ? `<div class="small"><a href="${esc(c.image)}" target="_blank" rel="noopener noreferrer">Image</a></div>` : ""}
         ${c.body ? `<div class="md card card-pad">${md(c.body)}</div>` : ""}
-        <details class="card card-pad"><summary class="small"><b>Edit</b> title, details, link, tags</summary>
+        <details class="card card-pad" id="c-edit" ${draft?.edit ? "open" : ""}><summary class="small"><b>Edit</b> title, details, link, tags</summary>
           <form class="stack" id="c-form" style="margin-top:10px">
             <label class="field">Title<input class="input" name="title" value="${esc(c.title)}" required></label>
             <label class="field">Details (Markdown)<textarea class="input" name="body" rows="8">${esc(c.body ?? "")}</textarea></label>
@@ -2259,13 +2310,17 @@ async function viewBoards(root, id) {
           </form></details>
         <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" id="c-bypass" ${c.bypass ? "checked" : ""}><span><b>Bypass</b>: work on this card runs tools without asking${b.bypass ? " (the whole board has bypass on)" : ""}</span></label>
         <div><h2 class="section" style="margin-top:6px">Activity</h2>
-          <form class="inline-form" id="c-comment" style="padding:0 0 8px"><textarea class="input grow" name="text" rows="2" placeholder="Comment (the assignee sees it)…" required></textarea><button class="btn">Comment</button></form>
-          <div class="card-evs">${c.events.slice().reverse().map(evHtml).join("")}</div></div>
+          <form class="inline-form comment-box" id="c-comment" style="padding:0 0 8px"><textarea class="input grow" name="text" rows="2" placeholder="Comment… type @ to have a teammate act on it" required></textarea><button class="btn">Comment</button></form>
+          <div class="card-evs">${working}${c.events.slice().reverse().map((e) => evHtml(e, replies)).join("")}</div></div>
       </div>
       <div class="drawer-foot"><button class="btn danger ghost" id="c-del">${ICON.trash}Delete</button><span class="grow"></span><button class="btn" data-close>Close</button></div>`,
-      { wide: true, onClose: () => { state.openCard = null; } });
+      { wide: true, key: `card-${cid}`, onClose: () => { state.openCard = null; clearTimeout(state.cardPoll); } });
+    // While someone works on it, look again every few seconds (what they're doing, and the reply when it lands).
+    clearTimeout(state.cardPoll);
+    if (open.length) state.cardPoll = setTimeout(() => cardDrawer(cid, true), 4000);
     const patch = async (body, again = true) => {
-      try { await api(`/api/cards/${cid}`, { method: "PATCH", body }); await load(); if (again && state.openCard === cid) cardDrawer(cid); } catch (err) { fail(err); cardDrawer(cid); }
+      try { await api(`/api/cards/${cid}`, { method: "PATCH", body }); await load(); if (again) await cardDrawer(cid, true); return true; }
+      catch (err) { fail(err); cardDrawer(cid); return false; }
     };
     $("#c-col", d.el).onchange = (e) => patch({ column: e.target.value });
     $("#c-who", d.el).onchange = (e) => {
@@ -2283,7 +2338,18 @@ async function viewBoards(root, id) {
       const f = Object.fromEntries(new FormData(e.target));
       patch({ ...f, tags: f.tags.split(",").map((t) => t.trim()).filter(Boolean) });
     };
-    $("#c-comment", d.el).onsubmit = (e) => { e.preventDefault(); const text = new FormData(e.target).get("text").trim(); if (text) patch({ comment: text }); };
+    const cta = $("#c-comment textarea", d.el);
+    if (draft) { cta.value = draft.text; if (draft.focused) { cta.focus(); cta.selectionStart = cta.selectionEnd = cta.value.length; } }
+    autosize(cta, 200);
+    const picker = mentionPicker(cta, $("#c-comment", d.el), { below: true });
+    cta.addEventListener("keydown", (e) => { if (!picker.open() && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("#c-comment", d.el).requestSubmit(); } });
+    $("#c-comment", d.el).onsubmit = async (e) => {
+      e.preventDefault();
+      const text = cta.value.trim();
+      if (!text) return;
+      cta.value = ""; // so the refresh doesn't carry it over as a draft
+      if (!(await patch({ comment: text }))) { const t = $(`.drawer[data-key="card-${cid}"] #c-comment textarea`); if (t) t.value = text; }
+    };
     $("#c-del", d.el).onclick = async () => {
       if (!confirm(`Delete card #${c.id} "${c.title}" and its history?`)) return;
       try { await api(`/api/cards/${cid}`, { method: "DELETE" }); d.close(); load(); } catch (err) { fail(err); }
@@ -2346,12 +2412,14 @@ async function viewBoards(root, id) {
 
   await load();
   const reload = debounce(load, 400);
+  const refreshCard = debounce(() => state.openCard && cardDrawer(state.openCard, true), 300);
   return {
+    destroy: () => clearTimeout(state.cardPoll),
     update: (nid) => { state.id = nid ? Number(nid) : null; state.q = ""; state.mine = false; load(); },
     onUi: (e) => {
       if (e.kind === "boards" || e.kind === "tasks") {
         reload();
-        if (state.openCard && e.cardId === state.openCard && $("#drawer-root").children.length) cardDrawer(state.openCard);
+        if (state.openCard && (e.cardId === state.openCard || e.kind === "tasks") && $("#drawer-root").children.length) refreshCard();
       }
     },
   };

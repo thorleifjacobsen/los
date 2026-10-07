@@ -387,6 +387,15 @@ web/                    vanilla JS SPA (app.js), style.css, login.html. marked +
   reassign; agent→agent passes are capped at 5 (`MAX_PASSES`) until you touch the card; only you set bypass (board or
   card → the card task's bypass). Agents see their boards (owned or with cards assigned) + your recent moves/comments
   in the system prompt (`boardsContext()`), which is how Kai learns from rejected leads.
+- **Comments** (2026-10-07): only an @mention makes anyone act. Your comment with `@kai` (or `@team`) gives each
+  mentioned agent a task on the card right away (`askFromComment()`, outside the one-at-a-time queue) with the card +
+  your comment; its final answer lands on the card as its reply. The comment's event keeps `{asked, tasks}`, so
+  `afterCardTask()` doesn't hand the card back to you after a reply. A comment without a mention is just a note
+  (agents see it later in the card history / `boardsContext()`). Agents' own comments never wake anyone. While a
+  task works on a card, the drawer shows "Kai is working on your comment · <last tool>" (`doing` in `GET /api/cards/:id`)
+  and refreshes every 4 s in place (`openDrawer(…, {key})` swaps content: no fade, scroll and comment draft kept).
+  An agent in a card task can bring in teammates with `team_ask` (waits for the answer) or by assigning the card on.
+- **@ autocomplete:** `mentionPicker(textarea, box)` in app.js, used by the chat composer and card comments.
 - **UI** `/boards`, `/boards/:id` (drag between columns, card drawer with activity); nav badge = cards waiting for you
   (`needsYou()`, also `cardsForYou` in `/api/overview`). Only `/files/…` card images are shown (no web images).
 - **Leads:** board "Leads" (owner kai, columns New / Approved / Contacted / Won / Lost / Not a lead), chat "Leads",

@@ -673,7 +673,9 @@ export function startWebServer(app: App, opts: { port: number; worker: { current
   route("GET", "/api/cards/:id", (req) => {
     const c = boardsDo(() => getCard(db, Number(req.params.id)));
     return { ...cardOut(c), events: cardEvents(db, c.id, 500),
-      tasks: db.prepare("SELECT id, status, agent, created_at FROM tasks WHERE card_id = ? ORDER BY id DESC LIMIT 20").all(c.id) };
+      // For work in progress: the last tool it called, so the card can say what it's doing.
+      tasks: (db.prepare("SELECT id, status, agent, created_at, updated_at FROM tasks WHERE card_id = ? ORDER BY id DESC LIMIT 20").all(c.id) as any[]).map((t) => ({ ...t,
+        doing: t.status === "running" ? (db.prepare("SELECT json_extract(data, '$.call.name') AS n FROM events WHERE task_id = ? AND type = 'tool_call' ORDER BY id DESC LIMIT 1").get(t.id) as any)?.n ?? null : null })) };
   });
   route("PATCH", "/api/cards/:id", async (req) => {
     const b = await body(req);
