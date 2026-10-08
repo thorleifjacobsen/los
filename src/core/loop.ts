@@ -338,7 +338,9 @@ function systemPrompt(app: App, o: RunOptions, cwd: string, opts: { toolSearch: 
     `To bring a teammate in, @mention them in your reply with what you need ("@${others[0]?.name ?? "name"}, can you …"). ` +
       "They answer in this chat after you, where the user watches. Only @mention someone when you want them to act now; " +
       "a name without @ does nothing. Don't do the work you hand over. When they've finished, you get the turn back with " +
-      "their answer, so hand over one step at a time and pass on the next one then.",
+      "their answer, so hand over one step at a time and pass on the next one then. " +
+      "They can read this whole chat, so point at what's already in it (\"the tables in Mira's last answer\") instead of " +
+      "copying it; spell out only what's new: the task, decisions, and anything they couldn't see (like a tool result).",
     "When you've done what a teammate asked, just answer. @mention them back only if they need to continue with your result. " +
       "Never @mention someone just to thank them, agree, or offer more help; if you have nothing for them to do, write their name without @.",
   ].join("\n");
